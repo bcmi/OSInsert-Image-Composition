@@ -1,0 +1,58 @@
+# OSInsert-Image-Composition .gitignore
+
+# OS / editor / VCS noise
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+*.swp
+
+# Python / virtualenv
+.venv/
+venv/
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs and temp files
+logs/
+*.log
+*.tmp
+
+# Large model checkpoints (never commit)
+*.pth
+*.safetensors
+*.ckpt
+*.pt
+
+# Common model directories
+models/
+checkpoints/
+weights/
+
+# External repos (should be cloned separately, not vendored here)
+ObjectStitch-Image-Composition/
+insert-anything/
+
+# Generated experiment / cache directories
+exp/
+outputs/
+wandb/
+
+# All os_test-style datasets can be large; ignore by default, but keep os_test_demo
+os_test_*/
+!os_test_demo/
+
+# Intermediate / output directories (including demos)
+objectstitch_out_*/
+sam_masks_*/
+osinsert_outputs_*/
+osinsert_tmp_*/
+
+# MacOS metadata in nested folders
+**/.DS_Store
