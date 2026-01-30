@@ -1,40 +1,42 @@
 # OSInsert-Image-Composition
 
-OSInsert 是一个两阶段的目标插入（object insertion）流水线，本仓库已经将
-ObjectStitch、SAM 和 InsertAnything 的**推理所需最小代码**封装进
-`libcom/os_insert` 包中，无需再额外 `git clone` 其它仓库即可完成推理。
+OSInsert is a two-stage object insertion pipeline. This repository packages the
+minimal inference code for ObjectStitch, SAM, and InsertAnything into the
+`libcom/os_insert` module.
 
-- **第 1 阶段（ObjectStitch）**：在目标背景图上生成**粗糙合成结果**；  
-- **第 2 阶段（SAM + InsertAnything）**：使用 SAM 得到前景插入区域 mask，
-  并按老师示意图将 "原始背景 + ObjectStitch 结果 + SAM mask" 组合成
-  source image & mask，送入 InsertAnything，得到**高质量最终插入结果**。
+- **Stage 1 (ObjectStitch)**: generate a **coarse composite** on the target
+  background image.  
+- **Stage 2 (SAM + InsertAnything)**: apply SAM to obtain a foreground
+  insertion mask, then combine the "original background + ObjectStitch output
+  + SAM mask" into a source image and mask, and feed them into InsertAnything
+  to obtain a **high-quality final insertion result**.
 
-## 0. 效果示例（Results）
+## 0. Example Results
 
-下表展示了若干样本在不同阶段的图像（从左到右依次为：背景、前景、
-aggressive 模式（ObjectStitch + SAM + InsertAnything）、conservative 模式
-（仅 InsertAnything））。
+The table below shows several samples at different stages (from left to right:
+background, foreground, aggressive mode (ObjectStitch + SAM + InsertAnything),
+and conservative mode (InsertAnything only)).
 
-| 样本      | 背景（background）                                    | 前景（foreground）                                      | aggressive（OSInsert，全流程）                                   | conservative（InsertAnything）                                  |
-|-----------|--------------------------------------------------------|---------------------------------------------------------|------------------------------------------------------------------|------------------------------------------------------------------|
-| bottle    | ![](examples/results/bottle/bottle_bg_bbox.png)       | ![](examples/results/bottle/bottle_foreground.png)      | ![](examples/results/bottle/bottle_osinsert.png)                 | ![](examples/results/bottle/bottle_insertanything.png)          |
-| box       | ![](examples/results/box/box_bg_bbox.png)             | ![](examples/results/box/box_foreground.png)            | ![](examples/results/box/box_osinsert.png)                       | ![](examples/results/box/box_insertanything.png)                |
-| bus       | ![](examples/results/bus/bus_bg_bbox.png)             | ![](examples/results/bus/bus_foreground.png)            | ![](examples/results/bus/bus_osinsert.png)                       | ![](examples/results/bus/bus_insertanything.png)                |
-| cake      | ![](examples/results/cake/cake_bg_bbox.png)           | ![](examples/results/cake/cake_foreground.png)          | ![](examples/results/cake/cake_osinsert.png)                     | ![](examples/results/cake/cake_insertanything.png)              |
-| keyboard  | ![](examples/results/keyboard/keyboard_bg_bbox.png)   | ![](examples/results/keyboard/keyboard_foreground.png)  | ![](examples/results/keyboard/keyboard_osinsert.png)             | ![](examples/results/keyboard/keyboard_insertanything.png)      |
-| frame     | ![](examples/results/frame/frame_bg_bbox.png)         | ![](examples/results/frame/frame_foreground.png)        | ![](examples/results/frame/frame_osinsert.png)                   | ![](examples/results/frame/frame_insertanything.png)            |
+| Sample   | Background                                            | Foreground                                              | aggressive (OSInsert, full pipeline)                              | conservative (InsertAnything)                                     |
+|----------|-------------------------------------------------------|---------------------------------------------------------|--------------------------------------------------------------------|--------------------------------------------------------------------|
+| bottle   | ![](examples/results/bottle/bottle_bg_bbox.png)      | ![](examples/results/bottle/bottle_foreground.png)      | ![](examples/results/bottle/bottle_osinsert.png)                  | ![](examples/results/bottle/bottle_insertanything.png)            |
+| box      | ![](examples/results/box/box_bg_bbox.png)            | ![](examples/results/box/box_foreground.png)            | ![](examples/results/box/box_osinsert.png)                        | ![](examples/results/box/box_insertanything.png)                  |
+| bus      | ![](examples/results/bus/bus_bg_bbox.png)            | ![](examples/results/bus/bus_foreground.png)            | ![](examples/results/bus/bus_osinsert.png)                        | ![](examples/results/bus/bus_insertanything.png)                  |
+| cake     | ![](examples/results/cake/cake_bg_bbox.png)          | ![](examples/results/cake/cake_foreground.png)          | ![](examples/results/cake/cake_osinsert.png)                      | ![](examples/results/cake/cake_insertanything.png)                |
+| keyboard | ![](examples/results/keyboard/keyboard_bg_bbox.png)  | ![](examples/results/keyboard/keyboard_foreground.png)  | ![](examples/results/keyboard/keyboard_osinsert.png)              | ![](examples/results/keyboard/keyboard_insertanything.png)        |
+| frame    | ![](examples/results/frame/frame_bg_bbox.png)        | ![](examples/results/frame/frame_foreground.png)        | ![](examples/results/frame/frame_osinsert.png)                    | ![](examples/results/frame/frame_insertanything.png)              |
 
 ---
 
-## 1. 环境说明（Environment）
+## 1. Environment
 
-推荐配置：
+Example environment configuration:
 
-- 操作系统：Linux
+- OS: Linux
 - Python 3.10
 - PyTorch ≥ 2.6.0
 
-安装依赖示例：
+Dependency installation example:
 
 ```bash
 conda create -n osinsert python=3.10
@@ -42,16 +44,18 @@ conda activate osinsert
 pip install -r requirements.txt
 ```
 
-> 注意：本仓库 **不包含任何预训练权重**。
-> 自行下载并在脚本或配置中填入对应的路径。
+> Note: This repository **does not include any pretrained weights**. Checkpoints
+> must be downloaded via the links below and configured via the local directory
+> structure or environment variables.
 
 ---
 
-## 2. 模型与目录结构（Models & Layout）
+## 2. Models and Directory Layout
 
-本仓库是**自包含**的，不再依赖外部 ObjectStitch / InsertAnything 仓库。所有
-推理相关代码都在 `libcom/os_insert` 下，所有 checkpoint 统一放在
-`pretrained_models/` 目录中：
+This repository is **self-contained** and no longer depends on external
+ObjectStitch / InsertAnything source repositories. All inference-related code
+resides under `libcom/os_insert`. All checkpoints are organized under the
+`pretrained_models/` directory:
 
 ```text
 pretrained_models/
@@ -65,52 +69,61 @@ pretrained_models/
       model.ckpt                      # -> ObjectStitch.pth
       configs/
         v1.yaml
-      openai-clip-vit-large-patch14/  # CLIP 权重目录
+      openai-clip-vit-large-patch14/  # CLIP weights directory
   sam/
     sam_vit_h_4b8939.pth
 ```
 
-### 2.1 模型权重下载（Checkpoints）
+### 2.1 Checkpoints
 
-- **ObjectStitch checkpoint**：参考原项目文档  
-  <https://github.com/bcmi/ObjectStitch-Image-Composition>
-- **SAM ViT-H**：`sam_vit_h_4b8939.pth`  
-  官方直接下载链接：<https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth>
-- **InsertAnything LoRA**：   
-  直接下载 LoRA：<https://huggingface.co/WensongSong/Insert-Anything/resolve/main/20250321_steps5000_pytorch_lora_weights.safetensors>
-- **FLUX.1-Fill-dev / FLUX.1-Redux-dev**：  
-  仓库主页：<https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev>  
-  直接下载 Fill 模型示例：<https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev/resolve/main/flux1-fill-dev.safetensors>  
-  仓库主页：<https://huggingface.co/black-forest-labs/FLUX.1-Redux-dev>
+- **ObjectStitch checkpoint**:
+  - openai-clip-vit-large-patch14  
+    - HuggingFace: <https://huggingface.co/BCMIZB/Libcom_pretrained_models/blob/main/openai-clip-vit-large-patch14.zip>  
+    - ModelScope: <https://www.modelscope.cn/models/bcmizb/Libcom_pretrained_models/file/view/master/openai-clip-vit-large-patch14.zip>
+  - ObjectStitch.pth  
+    - HuggingFace: <https://huggingface.co/BCMIZB/Libcom_pretrained_models/blob/main/ObjectStitch.pth>  
+    - ModelScope: <https://www.modelscope.cn/models/bcmizb/Libcom_pretrained_models/file/view/master/ObjectStitch.pth>
 
-下载后，将它们整理到上述目录结构中即可。也可以通过环境变量覆写默认路径：
+- **SAM ViT-H**: `sam_vit_h_4b8939.pth`  
+  - Official download: <https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth>
+
+- **InsertAnything LoRA** (recommended):  
+  - Direct download: <https://huggingface.co/WensongSong/Insert-Anything/resolve/main/20250321_steps5000_pytorch_lora_weights.safetensors>
+
+- **FLUX.1-Fill-dev / FLUX.1-Redux-dev**:  
+  - FLUX.1-Fill-dev: <https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev/resolve/main/flux1-fill-dev.safetensors>  
+  - FLUX.1-Redux-dev: <https://huggingface.co/black-forest-labs/FLUX.1-Redux-dev/resolve/main/flux1-redux-dev.safetensors>
+
+After downloading, organize all files according to the directory structure
+above. The following environment variables can override default paths:
 
 - `FLUX_FILL_PATH`
 - `FLUX_REDUX_PATH`
 - `IA_LORA_PATH`
 
-如果未设置环境变量，会使用 `pretrained_models/...` 下的默认位置。
+If these variables are not set, the defaults under `pretrained_models/...` are
+used.
 
 ---
 
-## 3. 数据格式（Data Format）
+## 3. Data Format
 
-OSInsert 的数据格式与原 ObjectStitch 保持一致：
+The data format of OSInsert follows the original ObjectStitch convention:
 
 - `background/{uniq}.png`
 - `foreground/{uniq}.png`
 - `foreground_mask/{uniq}.png`
-- `bbox/{uniq}.txt`（内容为 `x1 y1 x2 y2`）
+- `bbox/{uniq}.txt` (content: `x1 y1 x2 y2`)
 
-TSV 列表文件包含如下列：
+The TSV list file contains the following columns:
 
 ```text
 uniq_id \t bg_path \t fg_path \t fg_mask_path
 ```
 
-### 3.1 本仓库自带的 Demo 数据
+### 3.1 Built-in Demo Data
 
-为了方便快速体验，本仓库提供了一个**最小可运行 Demo**：
+This repository provides a **minimal runnable demo**:
 
 - `examples/samples_demo.tsv`
 - `os_test_demo/background/Demo_0.png`
@@ -118,69 +131,76 @@ uniq_id \t bg_path \t fg_path \t fg_mask_path
 - `os_test_demo/foreground_mask/Demo_0.png`
 - `os_test_demo/bbox/Demo_0.txt`
 
-你可以：
+Typical usage:
 
-- **直接复用**这些 Demo 文件测试流程是否正常；
-- 或者用自己的图片替换上述文件，只要保持**相同的文件名和目录结构**；
-- 或者完全新建一套 TSV + `os_test` 目录，然后在脚本参数中传入你自己的路径。
+- Directly reuse these demo files to verify the pipeline.  
+- Replace the images with custom data while keeping the same filenames and
+  directory structure.  
+- Create a new TSV and `os_test` directory, and pass their paths via script
+  arguments.
 
 ---
 
-## 4. 一键 Demo：OSInsertModel
+## 4. One-Click Demo: OSInsertModel
 
-当前推荐的入口脚本是 `tests/test_os_insert.py`，直接调用
-`libcom.os_insert.OSInsertModel`。不再需要 `osinsert/run_osinsert_full.py` 之类的
-多脚本流水线。
+The main entry script is `tests/test_os_insert.py`, which calls
+`libcom.os_insert.OSInsertModel`. Legacy multi-script pipelines such as
+`osinsert/run_osinsert_full.py` are no longer required.
 
-### 4.1 Demo 数据
+### 4.1 Demo Data
 
-本仓库自带一组最小 Demo，位于：
+The repository includes a minimal demo under:
 
 - `tests/source/background/Demo_0.png`
 - `tests/source/foreground/Demo_0.png`
 - `tests/source/foreground_mask/Demo_0.png`
 - `tests/source/bbox/Demo_0.txt`
 
-你可以直接替换这些文件的内容（保持文件名不变），用自己的图片快速测试。
+These files can be replaced (while keeping filenames unchanged) for quick
+custom tests.
 
-### 4.2 运行 conservative / aggressive 模式
+### 4.2 Running Conservative / Aggressive Modes
 
-`tests/test_os_insert.py` 支持通过 `--mode` 选择运行模式：
+`tests/test_os_insert.py` exposes a `--mode` argument to select the run mode:
 
-- `conservative`：仅使用 InsertAnything，在背景图的 bbox 区域内进行插入；
-- `aggressive`：完整两阶段流水线：ObjectStitch → SAM → InsertAnything。
+- `conservative`: use InsertAnything only, performing insertion within the bbox
+  region on the background image.
+- `aggressive`: full two-stage pipeline: ObjectStitch → SAM → InsertAnything.
 
-示例命令：
+Example commands:
 
 ```bash
 conda activate osinsert
 cd OSInsert-Image-Composition
 
-# 只跑 conservative（默认）
+# Conservative mode (default)
 python -m tests.test_os_insert --mode conservative
 
-# 只跑 aggressive（ObjectStitch + SAM + InsertAnything）
+# Aggressive mode (ObjectStitch + SAM + InsertAnything)
 python -m tests.test_os_insert --mode aggressive
 ```
 
-运行结束后，你可以在：
+Outputs are written to:
 
-- `tests/result_dir/osinsert_demo/` 中查看 conservative 结果；
-- `tests/result_dir/osinsert_demo_aggressive/` 中查看 aggressive 结果。
+- `tests/result_dir/osinsert_demo/`: conservative mode results.  
+- `tests/result_dir/osinsert_demo_aggressive/`: aggressive mode results.
 
-在 aggressive 模式下，如果将 `cleanup_intermediate=False`，还会额外保留：
+In aggressive mode, setting `cleanup_intermediate=False` additionally keeps the
+following intermediate files:
 
-- `objectstitch_coarse.png`：ObjectStitch 粗合成结果；
-- `objectstitch_coarse_sam_mask.png`：SAM 在粗合成上的原始 mask；
-- `objectstitch_coarse_sam_blend.png`：bg 与 ObjectStitch 结果按 SAM mask 混合后的 source；
-- `objectstitch_coarse_sam_mask_resized.png`：已经 resize 到 bg 尺寸、用于 InsertAnything 的 mask。
+- `objectstitch_coarse.png`: ObjectStitch coarse composite.  
+- `objectstitch_coarse_sam_mask.png`: raw SAM mask on the coarse composite.  
+- `objectstitch_coarse_sam_blend.png`: background and ObjectStitch composite
+  blended by the SAM mask (source image).  
+- `objectstitch_coarse_sam_mask_resized.png`: SAM mask resized to the
+  background resolution, used as the final InsertAnything mask.
 
-如果 `cleanup_intermediate=True`，这些中间文件会在推理结束后自动清理，仅保留
-最终输出图像。
+When `cleanup_intermediate=True`, these intermediate files are removed after
+inference, and only the final outputs are kept.
 
-### 4.3 OSInsertModel 接口概览
+### 4.3 OSInsertModel API Overview
 
-`libcom/os_insert/os_insert.py` 中提供了统一的 `OSInsertModel`：
+The unified `OSInsertModel` is defined in `libcom/os_insert/os_insert.py`:
 
 ```python
 from libcom.os_insert import OSInsertModel
@@ -193,19 +213,26 @@ model(
     foreground_mask_path="tests/source/foreground_mask/Demo_0.png",
     bbox_txt_path="tests/source/bbox/Demo_0.txt",
     result_dir="tests/result_dir/osinsert_demo_aggressive",
-    mode="aggressive",          # 或 "conservative"
-    cleanup_intermediate=False,  # 是否保留中间结果
+    mode="aggressive",          # or "conservative"
+    cleanup_intermediate=False,  # whether to keep intermediate files
     seed=123,
     strength=1.0,
 )
 ```
 
-内部会自动完成：
+The internal behavior is as follows:
 
-- conservative：bg + bbox → 矩形 mask → InsertAnything；
-- aggressive：
-  - ObjectStitch：在 bg 上生成粗合成 `objectstitch_coarse.png`；
-  - SAM：在粗合成上通过 bbox 提取 mask；
-  - 混合：将 `bg` 与 `objectstitch_coarse` 按 SAM mask 混合，形成新的
-    source & mask（尺寸与 bg 对齐）；
-  - InsertAnything：在该区域内完成高质量插入。
+- `conservative`:  
+  - Use `background + bbox` to construct a rectangular mask.  
+  - Call InsertAnything directly on this region.
+
+- `aggressive`:  
+  - ObjectStitch: generate a coarse composite `objectstitch_coarse.png` on the
+    background.  
+  - SAM: run SAM on the coarse composite with the bbox and obtain a binary
+    mask.  
+  - Blending: blend the original background and the coarse composite according
+    to the SAM mask to form a new source image and mask (aligned to the
+    original background resolution).  
+  - InsertAnything: run InsertAnything on this region to obtain the final
+    high-quality insertion result.
