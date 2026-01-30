@@ -1,0 +1,31 @@
+# macOS metadata
+.DS_Store
+._*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual envs 
+venv/
+.env/
+
+# Checkpoints / large model files (不要传到 GitHub)
+pretrained_models/
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+
+# Test outputs / intermediate results
+tests/result_dir/
+
+# Jupyter / IDE
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log

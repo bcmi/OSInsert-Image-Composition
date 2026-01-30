@@ -1,0 +1,48 @@
+## OSInsert-Image-Composition requirements
+## Environment: Linux, Python==3.10, PyTorch>=2.6.0 (following libcom main branch)
+## For other dependencies, install the packages listed below.
+einops
+huggingface_hub
+imageio
+torch==2.6.0
+torchvision==0.21.0
+diffusers==0.34.0
+mmdet==3.2.0
+mmpose==1.2.0
+peft
+sentencepiece
+protobuf
+modelscope
+omegaconf
+opencv_python
+opencv_python_headless
+pytorch_lightning
+transformers
+tqdm
+open_clip_torch
+taming-transformers-rom1504
+scikit-learn
+
+
+
+# ObjectStitch
+academictorrents
+albumentations
+clip
+natsort
+packaging
+Pillow
+PyYAML
+
+# insert-anything
+gradio
+bezier
+lightning
+datasets
+prodigyopt
+scipy
+
+# Awesome-Generative-Image-Composition
+opencv_contrib_python
+segment_anything
+torchmetrics
