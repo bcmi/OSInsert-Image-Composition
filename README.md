@@ -7,8 +7,7 @@ minimal inference code for ObjectStitch, SAM, and InsertAnything into the
 - **Stage 1 (ObjectStitch)**: generate a **coarse composite** on the target
   background image.  
 - **Stage 2 (SAM + InsertAnything)**: apply SAM to obtain a foreground
-  insertion mask, then combine the "original background + ObjectStitch output
-  + SAM mask" into a source image and mask, and feed them into InsertAnything
+  insertion mask, then combine the "original background + ObjectStitch output + SAM mask" into a source image and mask, and feed them into InsertAnything
   to obtain a **high-quality final insertion result**.
 
 ## 0. Example Results
