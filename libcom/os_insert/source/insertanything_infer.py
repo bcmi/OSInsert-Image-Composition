@@ -26,8 +26,6 @@ from .ia_utils import (
     expand_image_mask,
 )
 
-
-device = torch.device("cuda")
 dtype = torch.bfloat16
 size = (768, 768)
 
@@ -36,54 +34,162 @@ size = (768, 768)
 # 模型路径：对齐 libcom 的 `pretrained_models/` 目录约定。
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-PRETRAINED_ROOT = REPO_ROOT / "pretrained_models"
+_PIPE: FluxFillPipeline | None = None
+_REDUX: FluxPriorReduxPipeline | None = None
+_PIPE_KEY: tuple[str, str, str, str] | None = None
 
-FLUX_FILL_PATH = Path(
-    os.getenv(
-        "FLUX_FILL_PATH",
-        PRETRAINED_ROOT / "flux" / "FLUX.1-Fill-dev",
+
+def _resolve_ia_paths(
+    model_dir: str | Path | None,
+    *,
+    flux_fill_path: str | Path | None = None,
+    flux_redux_path: str | Path | None = None,
+    ia_lora_path: str | Path | None = None,
+):
+    if model_dir is None:
+        base = None
+    else:
+        base = Path(model_dir)
+
+    # Priority: explicit args > env vars > model_dir convention
+    flux_fill = str(flux_fill_path) if flux_fill_path is not None else os.getenv("FLUX_FILL_PATH")
+    flux_redux = str(flux_redux_path) if flux_redux_path is not None else os.getenv("FLUX_REDUX_PATH")
+    ia_lora = str(ia_lora_path) if ia_lora_path is not None else os.getenv("IA_LORA_PATH")
+
+    if flux_fill is None:
+        if base is None:
+            raise ValueError("model_dir must be provided when FLUX_FILL_PATH is not set")
+        flux_fill = str(base / "flux" / "FLUX.1-Fill-dev")
+    if flux_redux is None:
+        if base is None:
+            raise ValueError("model_dir must be provided when FLUX_REDUX_PATH is not set")
+        flux_redux = str(base / "flux" / "FLUX.1-Redux-dev")
+    if ia_lora is None:
+        if base is None:
+            raise ValueError("model_dir must be provided when IA_LORA_PATH is not set")
+        ia_lora = str(base / "insert_anything" / "20250321_steps5000_pytorch_lora_weights.safetensors")
+
+    return Path(flux_fill), Path(flux_redux), Path(ia_lora)
+
+
+def _get_pipes(
+    model_dir: str | Path | None,
+    *,
+    flux_fill_path: str | Path | None = None,
+    flux_redux_path: str | Path | None = None,
+    ia_lora_path: str | Path | None = None,
+    device: str | torch.device | None = None,
+):
+    global _PIPE, _REDUX, _PIPE_KEY
+
+    if device is not None and not isinstance(device, torch.device):
+        device = torch.device(device)
+
+    flux_fill_path, flux_redux_path, ia_lora_path = _resolve_ia_paths(
+        model_dir,
+        flux_fill_path=flux_fill_path,
+        flux_redux_path=flux_redux_path,
+        ia_lora_path=ia_lora_path,
     )
-)
-FLUX_REDUX_PATH = Path(
-    os.getenv(
-        "FLUX_REDUX_PATH",
-        PRETRAINED_ROOT / "flux" / "FLUX.1-Redux-dev",
+    device_key = str(device) if device is not None else "<diffusers_default>"
+    key = (str(flux_fill_path), str(flux_redux_path), str(ia_lora_path), device_key)
+
+    if _PIPE is not None and _REDUX is not None and _PIPE_KEY == key:
+        return _PIPE, _REDUX
+
+    pipe = FluxFillPipeline.from_pretrained(
+        str(flux_fill_path),
+        torch_dtype=dtype,
     )
-)
-INSERTANYTHING_LORA_PATH = Path(
-    os.getenv(
-        "IA_LORA_PATH",
-        PRETRAINED_ROOT
-        / "insert_anything"
-        / "20250321_steps5000_pytorch_lora_weights.safetensors",
-    )
-)
+    pipe.load_lora_weights(str(ia_lora_path))
+    redux = FluxPriorReduxPipeline.from_pretrained(str(flux_redux_path)).to(dtype=dtype)
+
+    # Prefer explicit device. If device is None, fall back to diffusers defaults.
+    if device is None:
+        pipe.enable_model_cpu_offload()
+        redux.enable_model_cpu_offload()
+        pipe.enable_vae_slicing()
+    elif device.type == "cuda":
+        gpu_id = int(device.index or 0)
+        pipe.enable_model_cpu_offload(gpu_id=gpu_id)
+        redux.enable_model_cpu_offload(gpu_id=gpu_id)
+        pipe.enable_vae_slicing()
+    else:
+        # CPU mode: keep everything on CPU.
+        pipe.to(device)
+        redux.to(device)
+
+    _PIPE = pipe
+    _REDUX = redux
+    _PIPE_KEY = key
+    return pipe, redux
 
 
-# Load the pre-trained model and LoRA weights
-pipe = FluxFillPipeline.from_pretrained(
-    str(FLUX_FILL_PATH),
-    torch_dtype=dtype,
-)
-pipe.load_lora_weights(str(INSERTANYTHING_LORA_PATH))
-redux = FluxPriorReduxPipeline.from_pretrained(str(FLUX_REDUX_PATH)).to(dtype=dtype)
 
-# 26GB 显存配置
-pipe.enable_model_cpu_offload()
-pipe.enable_vae_slicing()
-redux.enable_model_cpu_offload()
+def _to_rgb_numpy(image: str | Path | np.ndarray | Image.Image) -> np.ndarray:
+    if isinstance(image, (str, Path)):
+        bgr = cv2.imread(str(image))
+        if bgr is None:
+            raise FileNotFoundError(str(image))
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    if isinstance(image, Image.Image):
+        arr = np.array(image)
+        if arr.ndim != 3 or arr.shape[2] != 3:
+            raise ValueError("Expected RGB PIL image")
+        return arr
+    if isinstance(image, np.ndarray):
+        if image.ndim != 3 or image.shape[2] != 3:
+            raise ValueError("Expected HxWx3 numpy image")
+        return image
+    raise TypeError(f"Unsupported image type: {type(image)}")
+
+
+def _to_mask_u8(mask: str | Path | np.ndarray | Image.Image) -> np.ndarray:
+    if isinstance(mask, (str, Path)):
+        m = cv2.imread(str(mask))
+        if m is None:
+            raise FileNotFoundError(str(mask))
+        m = (m > 128).astype(np.uint8)[:, :, 0]
+        return m
+    if isinstance(mask, Image.Image):
+        m = np.array(mask)
+    elif isinstance(mask, np.ndarray):
+        m = mask
+    else:
+        raise TypeError(f"Unsupported mask type: {type(mask)}")
+
+    if m.ndim == 3:
+        m = m[:, :, 0]
+    if m.ndim != 2:
+        raise ValueError("Expected HxW mask")
+    return (m > 128).astype(np.uint8)
+
+
+def _basename_no_ext(x: str | Path | None, fallback: str) -> str:
+    if isinstance(x, (str, Path)):
+        base = os.path.basename(str(x))
+        return os.path.splitext(base)[0]
+    return fallback
 
 
 def run_insertanything(
-    source_image_path: str,
-    mask_image_path: str,
-    ref_image_path: str,
-    ref_mask_path: str,
+    source_image_path: str | Path | np.ndarray | Image.Image,
+    mask_image_path: str | Path | np.ndarray | Image.Image,
+    ref_image_path: str | Path | np.ndarray | Image.Image,
+    ref_mask_path: str | Path | np.ndarray | Image.Image,
+    sam_mask_path: str | Path | np.ndarray | Image.Image | None = None,
     seeds=123,
     strength: float | None = None,
+    split_ratio: float = 0.5,
     save_path: str = "./result",
     filename_suffix: str = "",
+    model_dir: str | Path | None = None,
+    flux_fill_path: str | Path | None = None,
+    flux_redux_path: str | Path | None = None,
+    ia_lora_path: str | Path | None = None,
+    device: str | torch.device | None = None,
+    *,
+    return_image: bool = False,
 ):
     """Single-image InsertAnything inference following the original diptych pipeline."""
 
@@ -91,19 +197,18 @@ def run_insertanything(
         seeds = [666]
 
     # Load the images and masks
-    ref_image = cv2.imread(ref_image_path)
-    if ref_image is None:
-        raise FileNotFoundError(ref_image_path)
-    ref_image = cv2.cvtColor(ref_image, cv2.COLOR_BGR2RGB)
+    ref_image = _to_rgb_numpy(ref_image_path)
+    tar_image = _to_rgb_numpy(source_image_path)
 
-    tar_image = cv2.imread(source_image_path)
-    if tar_image is None:
-        raise FileNotFoundError(source_image_path)
-    tar_image = cv2.cvtColor(tar_image, cv2.COLOR_BGR2RGB)
-
-    ref_mask = (cv2.imread(ref_mask_path) > 128).astype(np.uint8)[:, :, 0]
-    tar_mask = (cv2.imread(mask_image_path) > 128).astype(np.uint8)[:, :, 0]
+    ref_mask = _to_mask_u8(ref_mask_path)
+    tar_mask = _to_mask_u8(mask_image_path)
     tar_mask = cv2.resize(tar_mask, (tar_image.shape[1], tar_image.shape[0]))
+
+    # Optional SAM/ObjectStitch mask for dynamic mask switching in FluxFill
+    sam_mask = None
+    if sam_mask_path is not None:
+        sam_mask = _to_mask_u8(sam_mask_path)
+        sam_mask = cv2.resize(sam_mask, (tar_image.shape[1], tar_image.shape[0]))
 
     # Remove the background information of the reference picture
     ref_box_yyxx = get_bbox_from_mask(ref_mask)
@@ -135,11 +240,30 @@ def run_insertanything(
     old_tar_image = tar_image.copy()
     tar_image = tar_image[y1:y2, x1:x2, :]
     tar_mask = tar_mask[y1:y2, x1:x2]
+    if sam_mask is not None:
+        sam_mask = sam_mask[y1:y2, x1:x2]
 
     H1, W1 = tar_image.shape[0], tar_image.shape[1]
 
     tar_mask = pad_to_square(tar_mask, pad_value=0)
     tar_mask = cv2.resize(tar_mask, size)
+
+    if sam_mask is not None:
+        sam_mask = pad_to_square(sam_mask, pad_value=0)
+        sam_mask = cv2.resize(sam_mask, size)
+
+    if device is None:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+
+    pipe, redux = _get_pipes(
+        model_dir,
+        flux_fill_path=flux_fill_path,
+        flux_redux_path=flux_redux_path,
+        ia_lora_path=ia_lora_path,
+        device=device,
+    )
 
     # Extract the features of the reference image
     masked_ref_image = cv2.resize(masked_ref_image.astype(np.uint8), size).astype(np.uint8)
@@ -155,14 +279,31 @@ def run_insertanything(
     mask_black = np.ones_like(tar_image) * 0
     mask_diptych = np.concatenate([mask_black, tar_mask], axis=1)
 
+    # BBox-based mask for the second half of denoising (bbox_mask)
+    bbox_mask_diptych = mask_diptych.copy()
+
+    # SAM/ObjectStitch-based mask for the first half of denoising (sam_mask)
+    sam_mask_diptych = None
+    if sam_mask is not None:
+        sam_mask_rgb = np.stack([sam_mask, sam_mask, sam_mask], -1)
+        sam_mask_diptych = np.concatenate([mask_black, sam_mask_rgb], axis=1)
+
     diptych_ref_tar = Image.fromarray(diptych_ref_tar)
     mask_diptych[mask_diptych == 1] = 255
     mask_diptych = Image.fromarray(mask_diptych)
 
+    if bbox_mask_diptych is not None:
+        bbox_mask_diptych[bbox_mask_diptych == 1] = 255
+        bbox_mask_diptych = Image.fromarray(bbox_mask_diptych)
+
+    if sam_mask_diptych is not None:
+        sam_mask_diptych[sam_mask_diptych == 1] = 255
+        sam_mask_diptych = Image.fromarray(sam_mask_diptych)
+
     os.makedirs(save_path, exist_ok=True)
 
     for seed in seeds:
-        generator = torch.Generator(device).manual_seed(seed)
+        generator = torch.Generator(device=device).manual_seed(seed)
         edited_image = pipe(
             image=diptych_ref_tar,
             mask_image=mask_diptych,
@@ -171,6 +312,10 @@ def run_insertanything(
             max_sequence_length=512,
             generator=generator,
             strength=strength if strength is not None else 1.0,
+            # Dynamic mask switching inside FluxFillPipeline: first half SAM, second half bbox
+            sam_mask=sam_mask_diptych,
+            bbox_mask=bbox_mask_diptych,
+            split_ratio=split_ratio,
             **pipe_prior_output,
         ).images[0]
 
@@ -190,10 +335,8 @@ def run_insertanything(
         )
         edited_image = Image.fromarray(edited_image)
 
-        ref_with_ext = os.path.basename(ref_mask_path)
-        tar_with_ext = os.path.basename(mask_image_path)
-        ref_without_ext = os.path.splitext(ref_with_ext)[0]
-        tar_without_ext = os.path.splitext(tar_with_ext)[0]
+        ref_without_ext = _basename_no_ext(ref_mask_path if isinstance(ref_mask_path, (str, Path)) else None, "ref")
+        tar_without_ext = _basename_no_ext(mask_image_path if isinstance(mask_image_path, (str, Path)) else None, "tar")
 
         suffix = filename_suffix if filename_suffix else ""
         edited_image_save_path = os.path.join(
@@ -201,6 +344,11 @@ def run_insertanything(
             f"{ref_without_ext}_to_{tar_without_ext}_seed{seed}{suffix}.png",
         )
         edited_image.save(edited_image_save_path)
+
+        if return_image:
+            return np.array(edited_image)
+
+    return None
 
 
 def main():

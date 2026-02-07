@@ -18,11 +18,8 @@ import cv2
 import numpy as np
 
 from .source.insertanything_infer import run_insertanything
-from .source.objectstitch_infer import ObjectStitchConfig, run_objectstitch_single
-from .source.sam_on_objectstitch import (
-    SamOnObjectStitchConfig,
-    run_sam_on_objectstitch_single,
-)
+from .source.objectstitch_infer import ObjectStitchConfig, run_objectstitch_single_image
+from .source.sam_on_objectstitch import SamOnObjectStitchConfig, run_sam_on_objectstitch
 from .source.utils import load_bbox_txt, make_rect_mask_from_bbox
 
 
@@ -30,6 +27,14 @@ from .source.utils import load_bbox_txt, make_rect_mask_from_bbox
 class OSInsertConfig:
     model_dir: Path
     device: str = "cuda:0"
+    # Optional explicit checkpoint paths (override model_dir conventions)
+    objectstitch_ckpt_path: Path | None = None
+    objectstitch_config_path: Path | None = None
+    objectstitch_clip_dir: Path | None = None
+    sam_checkpoint: Path | None = None
+    flux_fill_path: Path | None = None
+    flux_redux_path: Path | None = None
+    ia_lora_path: Path | None = None
 
 
 class OSInsertModel:
@@ -41,8 +46,30 @@ class OSInsertModel:
     - ``conservative``: bg + bbox -> mask -> InsertAnything
     """
 
-    def __init__(self, model_dir: str | Path, device: str = "cuda:0") -> None:
-        self.config = OSInsertConfig(model_dir=Path(model_dir), device=device)
+    def __init__(
+        self,
+        model_dir: str | Path,
+        device: str = "cuda:0",
+        *,
+        objectstitch_ckpt_path: str | Path | None = None,
+        objectstitch_config_path: str | Path | None = None,
+        objectstitch_clip_dir: str | Path | None = None,
+        sam_checkpoint: str | Path | None = None,
+        flux_fill_path: str | Path | None = None,
+        flux_redux_path: str | Path | None = None,
+        ia_lora_path: str | Path | None = None,
+    ) -> None:
+        self.config = OSInsertConfig(
+            model_dir=Path(model_dir),
+            device=device,
+            objectstitch_ckpt_path=Path(objectstitch_ckpt_path) if objectstitch_ckpt_path is not None else None,
+            objectstitch_config_path=Path(objectstitch_config_path) if objectstitch_config_path is not None else None,
+            objectstitch_clip_dir=Path(objectstitch_clip_dir) if objectstitch_clip_dir is not None else None,
+            sam_checkpoint=Path(sam_checkpoint) if sam_checkpoint is not None else None,
+            flux_fill_path=Path(flux_fill_path) if flux_fill_path is not None else None,
+            flux_redux_path=Path(flux_redux_path) if flux_redux_path is not None else None,
+            ia_lora_path=Path(ia_lora_path) if ia_lora_path is not None else None,
+        )
 
     def __call__(
         self,
@@ -53,8 +80,10 @@ class OSInsertModel:
         result_dir: str | Path,
         mode: Literal["aggressive", "conservative"] = "conservative",
         cleanup_intermediate: bool = True,
+        verbose: bool = False,
         seed: int = 123,
         strength: float = 1.0,
+        split_ratio: float = 0.5,
     ) -> None:
         """Run a single OSInsert inference.
 
@@ -79,8 +108,10 @@ class OSInsertModel:
               any extra paths; all three stages will be handled internally in
               future updates.
         cleanup_intermediate:
-            Present for API compatibility; currently conservative mode does not
-            write any intermediates so this flag has no effect.
+            Deprecated. Present for backward compatibility.
+        verbose:
+            If True, save intermediate artifacts into ``result_dir/intermediates``.
+            Default False (do not save intermediates).
         seed:
             Random seed for InsertAnything.
         strength:
@@ -101,6 +132,10 @@ class OSInsertModel:
 
         os.makedirs(result_dir, exist_ok=True)
 
+        intermediates_dir = result_dir / "intermediates"
+        if verbose:
+            os.makedirs(intermediates_dir, exist_ok=True)
+
         # InsertAnything expects a list of seeds.
         seeds = [seed]
 
@@ -116,21 +151,41 @@ class OSInsertModel:
         # Aggressive mode: ObjectStitch + SAM + InsertAnything.
         # ------------------------------------------------------------------
         if mode == "aggressive":
-            # 1) ObjectStitch coarse composite.
-            os_cfg = ObjectStitchConfig(device=self.config.device)
-            os_image_path = run_objectstitch_single(
+            # 1) ObjectStitch coarse composite (in-memory).
+            objectstitch_ckpt = self.config.objectstitch_ckpt_path
+            if objectstitch_ckpt is None:
+                objectstitch_ckpt = self.config.model_dir / "objectstitch" / "v1" / "model.ckpt"
+
+            objectstitch_cfg = self.config.objectstitch_config_path
+            if objectstitch_cfg is None:
+                objectstitch_cfg = self.config.model_dir / "objectstitch" / "v1" / "configs" / "v1.yaml"
+
+            os_cfg = ObjectStitchConfig(
+                ckpt_path=objectstitch_ckpt,
+                config_path=objectstitch_cfg,
+                clip_dir=self.config.objectstitch_clip_dir,
+                device=self.config.device,
+            )
+            os_rgb = run_objectstitch_single_image(
                 bg_path=background_path,
                 fg_path=foreground_path,
                 fg_mask_path=foreground_mask_path,
                 bbox_xyxy=tuple(bbox),
                 config=os_cfg,
-                out_dir=result_dir,
+                seed=seed,
             )
 
-            # 2) SAM mask on top of ObjectStitch composite.
-            sam_cfg = SamOnObjectStitchConfig(device=self.config.device)
-            sam_mask_path = run_sam_on_objectstitch_single(
-                os_image_path=os_image_path,
+            # 2) SAM mask on top of ObjectStitch composite (in-memory).
+            sam_ckpt = self.config.sam_checkpoint
+            if sam_ckpt is None:
+                sam_ckpt = self.config.model_dir / "sam" / "sam_vit_h_4b8939.pth"
+
+            sam_cfg = SamOnObjectStitchConfig(
+                sam_checkpoint=sam_ckpt,
+                device=self.config.device,
+            )
+            sam_mask = run_sam_on_objectstitch(
+                os_image=cv2.cvtColor(os_rgb, cv2.COLOR_RGB2BGR),
                 bg_shape_hw=(h, w),
                 bbox_xyxy_bg=tuple(bbox),
                 config=sam_cfg,
@@ -139,13 +194,7 @@ class OSInsertModel:
             # 3) Construct InsertAnything source & mask following
             #    exp/run_insertanything_strength_sweep_dispatch.py::make_source_and_mask
             bg_bgr = bg  # already read above
-            os_bgr = cv2.imread(str(os_image_path))
-            if os_bgr is None:
-                raise FileNotFoundError(os_image_path)
-
-            sam_mask = cv2.imread(str(sam_mask_path), cv2.IMREAD_GRAYSCALE)
-            if sam_mask is None:
-                raise FileNotFoundError(sam_mask_path)
+            os_bgr = cv2.cvtColor(os_rgb, cv2.COLOR_RGB2BGR)
 
             hh, ww = bg_bgr.shape[:2]
             os_bgr = cv2.resize(os_bgr, (ww, hh), interpolation=cv2.INTER_AREA)
@@ -158,31 +207,35 @@ class OSInsertModel:
             src_bgr = bg_bgr.astype(np.float32) * (1.0 - m3) + os_bgr.astype(np.float32) * m3
             src_bgr = np.clip(src_bgr, 0, 255).astype(np.uint8)
 
-            tmp_src_path = result_dir / "objectstitch_coarse_sam_blend.png"
-            tmp_mask_path = result_dir / "objectstitch_coarse_sam_mask_resized.png"
-            cv2.imwrite(str(tmp_src_path), src_bgr)
-            cv2.imwrite(str(tmp_mask_path), sam_mask)
+            # BBox-based mask for InsertAnything second-stage (bbox mask)
+            bbox_mask = make_rect_mask_from_bbox(h, w, bbox)
 
-            # 4) InsertAnything refinement using blended source and resized mask.
+            if verbose:
+                cv2.imwrite(str(intermediates_dir / "objectstitch_coarse_rgb.png"), cv2.cvtColor(os_rgb, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(str(intermediates_dir / "sam_mask.png"), sam_mask)
+                cv2.imwrite(str(intermediates_dir / "blended_source.png"), src_bgr)
+                cv2.imwrite(str(intermediates_dir / "bbox_mask.png"), bbox_mask)
+
+            # 4) InsertAnything refinement using blended source, bbox mask
+            #    (for the second half of denoising) and SAM mask
+            #    (for the first half, wired via sam_mask_path).
             run_insertanything(
-                source_image_path=str(tmp_src_path),
-                mask_image_path=str(tmp_mask_path),
+                source_image_path=cv2.cvtColor(src_bgr, cv2.COLOR_BGR2RGB),
+                mask_image_path=bbox_mask,
                 ref_image_path=str(foreground_path),
                 ref_mask_path=str(foreground_mask_path),
+                sam_mask_path=sam_mask,
                 seeds=seeds,
                 strength=strength,
+                split_ratio=split_ratio,
                 save_path=str(result_dir),
                 filename_suffix="",
+                model_dir=self.config.model_dir,
+                flux_fill_path=self.config.flux_fill_path,
+                flux_redux_path=self.config.flux_redux_path,
+                ia_lora_path=self.config.ia_lora_path,
+                device=self.config.device,
             )
-
-            if cleanup_intermediate:
-                for p in (os_image_path, sam_mask_path, tmp_src_path, tmp_mask_path):
-                    try:
-                        if p.exists():
-                            p.unlink()
-                    except OSError:
-                        # Best-effort cleanup; ignore failures.
-                        pass
 
             return
 
@@ -191,24 +244,24 @@ class OSInsertModel:
         # ------------------------------------------------------------------
         mask = make_rect_mask_from_bbox(h, w, bbox)
 
-        tmp_mask_path = result_dir / "_tmp_bg_mask_from_bbox.png"
-        cv2.imwrite(str(tmp_mask_path), mask)
+        if verbose:
+            cv2.imwrite(str(intermediates_dir / "bbox_mask.png"), mask)
 
         run_insertanything(
             source_image_path=str(background_path),
-            mask_image_path=str(tmp_mask_path),
+            mask_image_path=mask,
             ref_image_path=str(foreground_path),
             ref_mask_path=str(foreground_mask_path),
             seeds=seeds,
             strength=strength,
+            split_ratio=split_ratio,
             save_path=str(result_dir),
             filename_suffix="",
+            model_dir=self.config.model_dir,
+            flux_fill_path=self.config.flux_fill_path,
+            flux_redux_path=self.config.flux_redux_path,
+            ia_lora_path=self.config.ia_lora_path,
+            device=self.config.device,
         )
 
-        if cleanup_intermediate and tmp_mask_path.exists():
-            try:
-                tmp_mask_path.unlink()
-            except OSError:
-                # Best-effort cleanup; ignore failures so that inference
-                # results are not affected.
-                pass
+        return

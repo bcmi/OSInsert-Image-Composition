@@ -67,6 +67,7 @@ class ObjectStitchConfig:
 
     ckpt_path: Path = PRETRAINED_ROOT / "v1" / "model.ckpt"
     config_path: Path = PRETRAINED_ROOT / "v1" / "configs" / "v1.yaml"
+    clip_dir: Path | None = None
     device: str = "cuda:0"
 
 
@@ -261,6 +262,7 @@ def run_objectstitch_single(
     *,
     config: ObjectStitchConfig,
     out_dir: Path | None = None,
+    seed: int | None = None,
 ) -> Path:
     """Run ObjectStitch for a single sample and return the coarse composite path.
 
@@ -273,10 +275,14 @@ def run_objectstitch_single(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load OmegaConf config and patch CLIP path to our pretrained root if needed.
+    # Load OmegaConf config and patch CLIP path to local directory if present.
     cfg = OmegaConf.load(str(config.config_path))
-    clip_dir = PRETRAINED_ROOT / "v1" / "openai-clip-vit-large-patch14"
-    if clip_dir.exists():
+    clip_dir = config.clip_dir
+    if clip_dir is None:
+        clip_dir = config.config_path.parent / "openai-clip-vit-large-patch14"
+        if not clip_dir.exists():
+            clip_dir = config.ckpt_path.parent / "openai-clip-vit-large-patch14"
+    if clip_dir is not None and Path(clip_dir).exists():
         cfg.model.params.cond_stage_config.params.version = str(clip_dir)
 
     # Instantiate model and sampler.
@@ -299,6 +305,11 @@ def run_objectstitch_single(
     guidance_scale = 5.0
 
     sampler = DDIMSampler(model)
+
+    if seed is not None:
+        torch.manual_seed(int(seed))
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(int(seed))
 
     start_code = torch.randn((num_samples, *latent_shape), device=device)
 
@@ -324,3 +335,72 @@ def run_objectstitch_single(
     Image.fromarray(comp_img[0]).save(out_path)
 
     return out_path
+
+
+def run_objectstitch_single_image(
+    bg_path: Path,
+    fg_path: Path,
+    fg_mask_path: Path,
+    bbox_xyxy: Tuple[int, int, int, int],
+    *,
+    config: ObjectStitchConfig,
+    seed: int | None = None,
+) -> np.ndarray:
+    """Run ObjectStitch for a single sample and return the coarse composite image (RGB uint8)."""
+
+    # Load OmegaConf config and patch CLIP path to local directory if present.
+    cfg = OmegaConf.load(str(config.config_path))
+    clip_dir = config.clip_dir
+    if clip_dir is None:
+        clip_dir = config.config_path.parent / "openai-clip-vit-large-patch14"
+        if not clip_dir.exists():
+            clip_dir = config.ckpt_path.parent / "openai-clip-vit-large-patch14"
+    if clip_dir is not None and Path(clip_dir).exists():
+        cfg.model.params.cond_stage_config.params.version = str(clip_dir)
+
+    model = instantiate_from_config(cfg["model"])
+    pl_sd = torch.load(str(config.ckpt_path), map_location="cpu")
+    sd = pl_sd["state_dict"] if "state_dict" in pl_sd else pl_sd
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    if missing:
+        print("[ObjectStitch] missing keys:", missing)
+    if unexpected:
+        print("[ObjectStitch] unexpected keys:", unexpected)
+
+    device = torch.device(config.device)
+    model = model.to(device)
+    model.eval()
+
+    img_size = (512, 512)
+    latent_shape = (4, img_size[1] // 8, img_size[0] // 8)
+    sample_steps = 50
+    num_samples = 1
+    guidance_scale = 5.0
+
+    sampler = DDIMSampler(model)
+
+    if seed is not None:
+        torch.manual_seed(int(seed))
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(int(seed))
+    start_code = torch.randn((num_samples, *latent_shape), device=device)
+
+    batch = generate_image_batch(bg_path, fg_path, bbox_xyxy, fg_mask_path)
+    test_model_kwargs, c, uc = prepare_input(batch, model, latent_shape, device, num_samples)
+
+    samples_ddim, _ = sampler.sample(
+        S=sample_steps,
+        conditioning=c,
+        batch_size=num_samples,
+        shape=list(latent_shape),
+        verbose=False,
+        eta=0.0,
+        x_T=start_code,
+        unconditional_guidance_scale=guidance_scale,
+        unconditional_conditioning=uc,
+        test_model_kwargs=test_model_kwargs,
+    )
+
+    x_samples_ddim = model.decode_first_stage(samples_ddim[:, :4]).cpu().float()
+    comp_img = tensor2numpy(x_samples_ddim, image_size=img_size)
+    return comp_img[0]

@@ -13,6 +13,7 @@ venv/
 
 # Checkpoints / large model files (不要传到 GitHub)
 pretrained_models/
+model_dir/
 *.ckpt
 *.pth
 *.pt
@@ -20,6 +21,10 @@ pretrained_models/
 
 # Test outputs / intermediate results
 tests/result_dir/
+result_dir/
+
+# Local backups
+*_backup.py
 
 # Jupyter / IDE
 .ipynb_checkpoints/

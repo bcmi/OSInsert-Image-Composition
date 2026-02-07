@@ -10,133 +10,174 @@ from typing import Tuple
 
 import cv2
 import numpy as np
+import math
 
 
 def get_bbox_from_mask(mask: np.ndarray) -> Tuple[int, int, int, int]:
     """Get (y1, y2, x1, x2) bounding box from a binary mask.
 
-    The mask is expected to be 2D with values 0/1 or 0/255.
+    This mirrors the original InsertAnything implementation: when the mask is
+    nearly empty, fall back to the full image.
     """
 
-    ys, xs = np.where(mask > 0)
-    if len(xs) == 0 or len(ys) == 0:
-        raise ValueError("Mask is empty, cannot compute bbox")
-    y1, y2 = int(ys.min()), int(ys.max())
-    x1, x2 = int(xs.min()), int(xs.max())
-    # +1 on max side to make the box inclusive-exclusive
-    return y1, y2 + 1, x1, x2 + 1
+    h, w = mask.shape[:2]
+
+    if mask.sum() < 10:
+        return 0, h, 0, w
+
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+    y1, y2 = np.where(rows)[0][[0, -1]]
+    x1, x2 = np.where(cols)[0][[0, -1]]
+    return int(y1), int(y2), int(x1), int(x2)
 
 
-def expand_bbox(img_or_mask: np.ndarray, box, ratio: float = 1.2):
-    """Expand a bbox by a ratio while keeping it inside the image."""
+def expand_bbox(mask: np.ndarray, yyxx, ratio: float, min_crop: int = 0):
+    """Expand a bbox using the same heuristic as the original repo.
 
-    h, w = img_or_mask.shape[:2]
-    y1, y2, x1, x2 = map(int, box)
-    cy = (y1 + y2) / 2.0
-    cx = (x1 + x2) / 2.0
-    hh = (y2 - y1) * ratio / 2.0
-    hw = (x2 - x1) * ratio / 2.0
-
-    y1_new = int(max(0, np.floor(cy - hh)))
-    y2_new = int(min(h, np.ceil(cy + hh)))
-    x1_new = int(max(0, np.floor(cx - hw)))
-    x2_new = int(min(w, np.ceil(cx + hw)))
-
-    return y1_new, y2_new, x1_new, x2_new
-
-
-def pad_to_square(img: np.ndarray, pad_value: int = 0, random: bool = False) -> np.ndarray:
-    """Pad an image to a square with constant value.
-
-    If `random` is False, pads symmetrically to keep the content centered.
+    `mask` is only used for its shape; the expansion ratio is adapted based on
+    the relative area of the bbox.
     """
 
-    h, w = img.shape[:2]
-    if h == w:
-        return img
+    y1, y2, x1, x2 = yyxx
+    H, W = mask.shape[0], mask.shape[1]
 
-    size = max(h, w)
-    if img.ndim == 2:
-        padded = np.full((size, size), pad_value, dtype=img.dtype)
-    else:
-        padded = np.full((size, size, img.shape[2]), pad_value, dtype=img.dtype)
+    yyxx_area = (y2 - y1 + 1) * (x2 - x1 + 1)
+    r1 = yyxx_area / (H * W)
 
-    if random:
-        if h < size:
-            top = np.random.randint(0, size - h + 1)
-        else:
-            top = 0
-        if w < size:
-            left = np.random.randint(0, size - w + 1)
-        else:
-            left = 0
-    else:
-        top = (size - h) // 2
-        left = (size - w) // 2
+    def _f(r, T=0.6, beta=0.1):
+        return np.where(r < T, beta + (1 - beta) / T * r, 1)
 
-    padded[top : top + h, left : left + w, ...] = img
-    return padded
+    r2 = _f(r1)
+    ratio = math.sqrt(r2 / r1)
 
+    xc, yc = 0.5 * (x1 + x2), 0.5 * (y1 + y2)
+    h = ratio * (y2 - y1 + 1)
+    w = ratio * (x2 - x1 + 1)
+    h = max(h, min_crop)
+    w = max(w, min_crop)
 
-def box2squre(img: np.ndarray, box) -> Tuple[int, int, int, int]:  # spelling kept for compatibility
-    """Adjust a bbox to be square by expanding the shorter side."""
+    x1 = int(xc - w * 0.5)
+    x2 = int(xc + w * 0.5)
+    y1 = int(yc - h * 0.5)
+    y2 = int(yc + h * 0.5)
 
-    h, w = img.shape[:2]
-    y1, y2, x1, x2 = map(int, box)
-    box_h = y2 - y1
-    box_w = x2 - x1
-
-    if box_h == box_w:
-        return y1, y2, x1, x2
-
-    if box_h > box_w:
-        diff = box_h - box_w
-        x1 -= diff // 2
-        x2 += diff - diff // 2
-    else:
-        diff = box_w - box_h
-        y1 -= diff // 2
-        y2 += diff - diff // 2
-
-    y1 = max(0, y1)
     x1 = max(0, x1)
-    y2 = min(h, y2)
-    x2 = min(w, x2)
+    x2 = min(W, x2)
+    y1 = max(0, y1)
+    y2 = min(H, y2)
+    return int(y1), int(y2), int(x1), int(x2)
 
-    return y1, y2, x1, x2
+
+def pad_to_square(image: np.ndarray, pad_value: int = 255, random: bool = False) -> np.ndarray:
+    """Pad to square using the original InsertAnything convention.
+
+    Only the shorter side is padded, and padding is applied with `np.pad`.
+    """
+
+    H, W = image.shape[0], image.shape[1]
+    if H == W:
+        return image
+
+    padd = abs(H - W)
+    if random:
+        padd_1 = int(np.random.randint(0, padd))
+    else:
+        padd_1 = int(padd / 2)
+    padd_2 = padd - padd_1
+
+    if image.ndim == 2:
+        if H > W:
+            pad_param = ((0, 0), (padd_1, padd_2))
+        else:
+            pad_param = ((padd_1, padd_2), (0, 0))
+    else:
+        if H > W:
+            pad_param = ((0, 0), (padd_1, padd_2), (0, 0))
+        else:
+            pad_param = ((padd_1, padd_2), (0, 0), (0, 0))
+
+    image = np.pad(image, pad_param, "constant", constant_values=pad_value)
+    return image
+
+
+def box2squre(image: np.ndarray, box) -> Tuple[int, int, int, int]:  # spelling kept for compatibility
+    """Convert a bbox to square, matching the original InsertAnything logic."""
+
+    H, W = image.shape[0], image.shape[1]
+    y1, y2, x1, x2 = box
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+    h = y2 - y1
+    w = x2 - x1
+
+    if h >= w:
+        x1 = cx - h // 2
+        x2 = cx + h // 2
+    else:
+        y1 = cy - w // 2
+        y2 = cy + w // 2
+    x1 = max(0, x1)
+    x2 = min(W, x2)
+    y1 = max(0, y1)
+    y2 = min(H, y2)
+    return int(y1), int(y2), int(x1), int(x2)
 
 
 def crop_back(edited: np.ndarray, old_tar: np.ndarray, hw_vec, box_crop) -> np.ndarray:
-    """Paste the edited crop back into the original target image."""
+    """Paste the edited crop back into the original target image.
+
+    This is a faithful port of the original InsertAnything geometry, including
+    margin and de-padding logic. It is used by both conservative and
+    aggressive modes so they share identical edge behavior.
+    """
 
     H1, W1, H2, W2 = map(int, hw_vec)
     y1, y2, x1, x2 = map(int, box_crop)
 
-    edited_resized = cv2.resize(edited, (x2 - x1, y2 - y1))
+    # Resize prediction back to the padded crop size.
+    pred = cv2.resize(edited, (W2, H2))
+    m = 2  # margin pixels
 
-    result = old_tar.copy()
-    result[y1:y2, x1:x2] = edited_resized
+    # Case 1: original crop was square, simple margin paste.
+    if W1 == H1:
+        if m != 0:
+            old_tar[y1 + m : y2 - m, x1 + m : x2 - m, :] = pred[m:-m, m:-m]
+        else:
+            old_tar[y1:y2, x1:x2, :] = pred[:, :]
+        return old_tar
 
-    return result
+    # Case 2: handle padding introduced by pad_to_square along one dimension.
+    if W1 < W2:
+        pad1 = int((W2 - W1) / 2)
+        pad2 = W2 - W1 - pad1
+        pred = pred[:, pad1:-pad2, :]
+    else:
+        pad1 = int((H2 - H1) / 2)
+        pad2 = H2 - H1 - pad1
+        pred = pred[pad1:-pad2, :, :]
+
+    gen_image = old_tar.copy()
+    if m != 0:
+        gen_image[y1 + m : y2 - m, x1 + m : x2 - m, :] = pred[m:-m, m:-m]
+    else:
+        gen_image[y1:y2, x1:x2, :] = pred[:, :]
+
+    return gen_image
 
 
-def expand_image_mask(img: np.ndarray, mask: np.ndarray, ratio: float = 1.3):
-    """Expand image and mask around the mask bbox by a ratio."""
+def expand_image_mask(image: np.ndarray, mask: np.ndarray, ratio: float = 1.4):
+    """Expand image and mask by symmetric padding (original behavior)."""
 
-    y1, y2, x1, x2 = get_bbox_from_mask(mask)
-    h, w = img.shape[:2]
+    h, w = image.shape[0], image.shape[1]
+    H, W = int(h * ratio), int(w * ratio)
+    h1 = int((H - h) // 2)
+    h2 = H - h - h1
+    w1 = int((W - w) // 2)
+    w2 = W - w - w1
 
-    cy = (y1 + y2) / 2.0
-    cx = (x1 + x2) / 2.0
-    hh = (y2 - y1) * ratio / 2.0
-    hw = (x2 - x1) * ratio / 2.0
-
-    y1_new = int(max(0, np.floor(cy - hh)))
-    y2_new = int(min(h, np.ceil(cy + hh)))
-    x1_new = int(max(0, np.floor(cx - hw)))
-    x2_new = int(min(w, np.ceil(cx + hw)))
-
-    img_crop = img[y1_new:y2_new, x1_new:x2_new]
-    mask_crop = mask[y1_new:y2_new, x1_new:x2_new]
-
-    return img_crop, mask_crop
+    pad_param_image = ((h1, h2), (w1, w2), (0, 0))
+    pad_param_mask = ((h1, h2), (w1, w2))
+    image = np.pad(image, pad_param_image, "constant", constant_values=255)
+    mask = np.pad(mask, pad_param_mask, "constant", constant_values=0)
+    return image, mask

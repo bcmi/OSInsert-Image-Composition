@@ -18,12 +18,12 @@ and conservative mode (InsertAnything only)).
 
 | Sample   | Background                                            | Foreground                                              | aggressive (OSInsert, full pipeline)                              | conservative (InsertAnything)                                     |
 |----------|-------------------------------------------------------|---------------------------------------------------------|--------------------------------------------------------------------|--------------------------------------------------------------------|
-| bottle   | ![](examples/results/bottle/bottle_bg_bbox.png)      | ![](examples/results/bottle/bottle_foreground.png)      | ![](examples/results/bottle/bottle_osinsert.png)                  | ![](examples/results/bottle/bottle_insertanything.png)            |
-| box      | ![](examples/results/box/box_bg_bbox.png)            | ![](examples/results/box/box_foreground.png)            | ![](examples/results/box/box_osinsert.png)                        | ![](examples/results/box/box_insertanything.png)                  |
-| bus      | ![](examples/results/bus/bus_bg_bbox.png)            | ![](examples/results/bus/bus_foreground.png)            | ![](examples/results/bus/bus_osinsert.png)                        | ![](examples/results/bus/bus_insertanything.png)                  |
-| cake     | ![](examples/results/cake/cake_bg_bbox.png)          | ![](examples/results/cake/cake_foreground.png)          | ![](examples/results/cake/cake_osinsert.png)                      | ![](examples/results/cake/cake_insertanything.png)                |
-| keyboard | ![](examples/results/keyboard/keyboard_bg_bbox.png)  | ![](examples/results/keyboard/keyboard_foreground.png)  | ![](examples/results/keyboard/keyboard_osinsert.png)              | ![](examples/results/keyboard/keyboard_insertanything.png)        |
-| frame    | ![](examples/results/frame/frame_bg_bbox.png)        | ![](examples/results/frame/frame_foreground.png)        | ![](examples/results/frame/frame_osinsert.png)                    | ![](examples/results/frame/frame_insertanything.png)              |
+| bottle   | ![](figures/bottle/bottle_bg_bbox.png)      | ![](figures/bottle/bottle_foreground.png)      | ![](figures/bottle/bottle_osinsert.png)                  | ![](figures/bottle/bottle_insertanything.png)            |
+| box      | ![](figures/box/box_bg_bbox.png)            | ![](figures/box/box_foreground.png)            | ![](figures/box/box_osinsert.png)                        | ![](figures/box/box_insertanything.png)                  |
+| bus      | ![](figures/bus/bus_bg_bbox.png)            | ![](figures/bus/bus_foreground.png)            | ![](figures/bus/bus_osinsert.png)                        | ![](figures/bus/bus_insertanything.png)                  |
+| cake     | ![](figures/cake/cake_bg_bbox.png)          | ![](figures/cake/cake_foreground.png)          | ![](figures/cake/cake_osinsert.png)                      | ![](figures/cake/cake_insertanything.png)                |
+| keyboard | ![](figures/keyboard/keyboard_bg_bbox.png)  | ![](figures/keyboard/keyboard_foreground.png)  | ![](figures/keyboard/keyboard_osinsert.png)              | ![](figures/keyboard/keyboard_insertanything.png)        |
+| frame    | ![](figures/frame/frame_bg_bbox.png)        | ![](figures/frame/frame_foreground.png)        | ![](figures/frame/frame_osinsert.png)                    | ![](figures/frame/frame_insertanything.png)              |
 
 ---
 
@@ -54,10 +54,10 @@ pip install -r requirements.txt
 This repository is **self-contained** and no longer depends on external
 ObjectStitch / InsertAnything source repositories. All inference-related code
 resides under `libcom/os_insert`. All checkpoints are organized under the
-`pretrained_models/` directory:
+`model_dir/` directory:
 
 ```text
-pretrained_models/
+model_dir/
   flux/
     FLUX.1-Fill-dev/
     FLUX.1-Redux-dev/
@@ -100,8 +100,7 @@ above. The following environment variables can override default paths:
 - `FLUX_REDUX_PATH`
 - `IA_LORA_PATH`
 
-If these variables are not set, the defaults under `pretrained_models/...` are
-used.
+If these variables are not set, the defaults under `model_dir/...` are used.
 
 ---
 
@@ -125,10 +124,10 @@ uniq_id \t bg_path \t fg_path \t fg_mask_path
 This repository provides a **minimal runnable demo**:
 
 - `examples/samples_demo.tsv`
-- `os_test_demo/background/Demo_0.png`
-- `os_test_demo/foreground/Demo_0.png`
-- `os_test_demo/foreground_mask/Demo_0.png`
-- `os_test_demo/bbox/Demo_0.txt`
+- `examples/background/Demo_0.png`
+- `examples/foreground/Demo_0.png`
+- `examples/foreground_mask/Demo_0.png`
+- `examples/bbox/Demo_0.txt`
 
 Typical usage:
 
@@ -148,12 +147,12 @@ The main entry script is `tests/test_os_insert.py`, which calls
 
 ### 4.1 Demo Data
 
-The repository includes a minimal demo under:
+The repository includes demo data under:
 
-- `tests/source/background/Demo_0.png`
-- `tests/source/foreground/Demo_0.png`
-- `tests/source/foreground_mask/Demo_0.png`
-- `tests/source/bbox/Demo_0.txt`
+- `examples/background/Demo_0.png`
+- `examples/foreground/Demo_0.png`
+- `examples/foreground_mask/Demo_0.png`
+- `examples/bbox/Demo_0.txt`
 
 These files can be replaced (while keeping filenames unchanged) for quick
 custom tests.
@@ -173,29 +172,33 @@ conda activate osinsert
 cd OSInsert-Image-Composition
 
 # Conservative mode (default)
-python -m tests.test_os_insert --mode conservative
+python -m test_os_insert --mode conservative --uniq_id Demo_0
 
 # Aggressive mode (ObjectStitch + SAM + InsertAnything)
-python -m tests.test_os_insert --mode aggressive
+# Minimal aggressive demo (uses defaults: uniq_id=Bus_2, device=cuda:0, split_ratio=0.5, seed=123)
+python -m test_os_insert --mode aggressive
+
+# Maximal / reproducible aggressive run (explicitly fix key knobs)
+python -m test_os_insert --mode aggressive --uniq_id Demo_0 --device cuda:0 --split_ratio 0.5 --seed 123
+
+# Notes
+# - You can freely remove optional flags (e.g. --device/--split_ratio/--seed/--verbose) and rely on defaults.
+# - Use --uniq_id to switch which sample under examples/ to run.
 ```
 
 Outputs are written to:
 
-- `tests/result_dir/osinsert_demo/`: conservative mode results.  
-- `tests/result_dir/osinsert_demo_aggressive/`: aggressive mode results.
+- `result_dir/osinsert_demo/`: conservative mode results.  
+- `result_dir/osinsert_demo_aggressive/`: aggressive mode results.
 
-In aggressive mode, setting `cleanup_intermediate=False` additionally keeps the
-following intermediate files:
+In aggressive mode, setting `--verbose` additionally keeps intermediate files
+under `result_dir/*/intermediates/`, including:
 
-- `objectstitch_coarse.png`: ObjectStitch coarse composite.  
-- `objectstitch_coarse_sam_mask.png`: raw SAM mask on the coarse composite.  
-- `objectstitch_coarse_sam_blend.png`: background and ObjectStitch composite
-  blended by the SAM mask (source image).  
-- `objectstitch_coarse_sam_mask_resized.png`: SAM mask resized to the
-  background resolution, used as the final InsertAnything mask.
-
-When `cleanup_intermediate=True`, these intermediate files are removed after
-inference, and only the final outputs are kept.
+- `objectstitch_coarse_rgb.png`: ObjectStitch coarse composite (BGR PNG).  
+- `sam_mask.png`: raw SAM mask on the coarse composite.  
+- `blended_source.png`: background and ObjectStitch composite blended by the SAM
+  mask (source image).  
+- `bbox_mask.png`: bbox (rectangular) mask used for the second phase.
 
 ### 4.3 OSInsertModel API Overview
 
@@ -204,18 +207,19 @@ The unified `OSInsertModel` is defined in `libcom/os_insert/os_insert.py`:
 ```python
 from libcom.os_insert import OSInsertModel
 
-model = OSInsertModel(model_dir="pretrained_models", device="cuda:0")
+model = OSInsertModel(model_dir="model_dir", device="cuda:0")
 
 model(
-    background_path="tests/source/background/Demo_0.png",
-    foreground_path="tests/source/foreground/Demo_0.png",
-    foreground_mask_path="tests/source/foreground_mask/Demo_0.png",
-    bbox_txt_path="tests/source/bbox/Demo_0.txt",
-    result_dir="tests/result_dir/osinsert_demo_aggressive",
+    background_path="examples/background/Demo_0.png",
+    foreground_path="examples/foreground/Demo_0.png",
+    foreground_mask_path="examples/foreground_mask/Demo_0.png",
+    bbox_txt_path="examples/bbox/Demo_0.txt",
+    result_dir="result_dir/osinsert_demo_aggressive",
     mode="aggressive",          # or "conservative"
-    cleanup_intermediate=False,  # whether to keep intermediate files
+    verbose=False,               # if True, save intermediate artifacts
     seed=123,
     strength=1.0,
+    split_ratio=0.5,             # first half SAM-mask, second half bbox-mask
 )
 ```
 
@@ -234,4 +238,32 @@ The internal behavior is as follows:
     to the SAM mask to form a new source image and mask (aligned to the
     original background resolution).  
   - InsertAnything: run InsertAnything on this region to obtain the final
-    high-quality insertion result.
+    high-quality insertion result. During the denoising process, OSInsert uses
+    a two-phase mask schedule: the first half of timesteps uses the
+    ObjectStitch/SAM mask, and the second half uses a bbox (rectangular) mask
+    to encourage more complete shadow/illumination synthesis.
+
+In aggressive mode, `seed` is also used to seed the ObjectStitch sampling step
+so that the coarse composite (and thus downstream SAM / blending) is
+reproducible.
+
+---
+
+## 5. Configuration Notes
+
+### 5.1 Single place to edit checkpoint paths
+
+For convenience, `tests/test_os_insert.py` contains a top-level `CONFIG` block
+where you can override all checkpoint paths (ObjectStitch / SAM / FLUX / LoRA)
+in one place. Any relative paths in that block are resolved against the repo
+root at runtime.
+
+### 5.2 About `libcom/os_insert/source/ldm`
+
+`libcom/os_insert/source/ldm` is a bundled copy of the minimal LDM code used by
+ObjectStitch.
+
+When running, `libcom/os_insert/source/objectstitch_infer.py` automatically
+adds its own source directory to `sys.path`, so imports like
+`from ldm.models.diffusion.ddim import DDIMSampler` work without requiring you
+to manually set `PYTHONPATH` or any environment variables.
