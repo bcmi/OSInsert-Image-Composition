@@ -1,10 +1,3 @@
-"""Core OSInsertModel implementation.
-
-Currently only the conservative mode is implemented, which maps directly to the
-existing InsertAnything pipeline by constructing a rectangular mask from the
-provided bbox and calling :func:`run_insertanything`.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,8 +10,12 @@ import os
 import cv2
 import numpy as np
 
-from .source.insertanything_infer import run_insertanything
-from .source.objectstitch_infer import ObjectStitchConfig, run_objectstitch_single_image
+from .source.insertanything_infer import InsertAnythingModel, insertanything_infer, run_insertanything
+from .source.objectstitch_infer import (
+    ObjectStitchConfig,
+    run_objectstitch_single_image,
+    run_objectstitch_single_image_from_images,
+)
 from .source.sam_on_objectstitch import SamOnObjectStitchConfig, run_sam_on_objectstitch
 from .source.utils import load_bbox_txt, make_rect_mask_from_bbox
 
@@ -71,6 +68,14 @@ class OSInsertModel:
             ia_lora_path=Path(ia_lora_path) if ia_lora_path is not None else None,
         )
 
+        self._ia_net = InsertAnythingModel(
+            model_dir=self.config.model_dir,
+            flux_fill_path=self.config.flux_fill_path,
+            flux_redux_path=self.config.flux_redux_path,
+            ia_lora_path=self.config.ia_lora_path,
+            device=self.config.device,
+        )
+
     def __call__(
         self,
         background_path: str | Path,
@@ -84,7 +89,7 @@ class OSInsertModel:
         seed: int = 123,
         strength: float = 1.0,
         split_ratio: float = 0.5,
-    ) -> None:
+    ) -> np.ndarray | None:
         """Run a single OSInsert inference.
 
         Parameters
@@ -145,6 +150,15 @@ class OSInsertModel:
             raise FileNotFoundError(background_path)
         h, w = bg.shape[:2]
 
+        fg = cv2.imread(str(foreground_path))
+        if fg is None:
+            raise FileNotFoundError(foreground_path)
+        fg_mask = cv2.imread(str(foreground_mask_path))
+        if fg_mask is None:
+            raise FileNotFoundError(foreground_mask_path)
+        if fg_mask.ndim == 3:
+            fg_mask = fg_mask[:, :, 0]
+
         bbox = load_bbox_txt(bbox_txt_path)
 
         # ------------------------------------------------------------------
@@ -167,10 +181,10 @@ class OSInsertModel:
                 device=self.config.device,
             )
             os_rgb = run_objectstitch_single_image(
-                bg_path=background_path,
-                fg_path=foreground_path,
-                fg_mask_path=foreground_mask_path,
-                bbox_xyxy=tuple(bbox),
+                background_path,
+                foreground_path,
+                foreground_mask_path,
+                tuple(bbox),
                 config=os_cfg,
                 seed=seed,
             )
@@ -219,25 +233,22 @@ class OSInsertModel:
             # 4) InsertAnything refinement using blended source, bbox mask
             #    (for the second half of denoising) and SAM mask
             #    (for the first half, wired via sam_mask_path).
-            run_insertanything(
-                source_image_path=cv2.cvtColor(src_bgr, cv2.COLOR_BGR2RGB),
-                mask_image_path=bbox_mask,
-                ref_image_path=str(foreground_path),
-                ref_mask_path=str(foreground_mask_path),
-                sam_mask_path=sam_mask,
+            result = insertanything_infer(
+                source_image=cv2.cvtColor(src_bgr, cv2.COLOR_BGR2RGB),
+                mask_image=bbox_mask,
+                ref_image=cv2.cvtColor(fg, cv2.COLOR_BGR2RGB),
+                ref_mask=fg_mask,
+                sam_mask=sam_mask,
                 seeds=seeds,
                 strength=strength,
                 split_ratio=split_ratio,
                 save_path=str(result_dir),
                 filename_suffix="",
-                model_dir=self.config.model_dir,
-                flux_fill_path=self.config.flux_fill_path,
-                flux_redux_path=self.config.flux_redux_path,
-                ia_lora_path=self.config.ia_lora_path,
-                device=self.config.device,
+                net=self._ia_net,
+                return_image=True,
             )
 
-            return
+            return result
 
         # ------------------------------------------------------------------
         # Conservative mode: background + bbox -> mask -> InsertAnything.
@@ -247,21 +258,140 @@ class OSInsertModel:
         if verbose:
             cv2.imwrite(str(intermediates_dir / "bbox_mask.png"), mask)
 
-        run_insertanything(
-            source_image_path=str(background_path),
-            mask_image_path=mask,
-            ref_image_path=str(foreground_path),
-            ref_mask_path=str(foreground_mask_path),
+        result = insertanything_infer(
+            source_image=cv2.cvtColor(bg, cv2.COLOR_BGR2RGB),
+            mask_image=mask,
+            ref_image=cv2.cvtColor(fg, cv2.COLOR_BGR2RGB),
+            ref_mask=fg_mask,
             seeds=seeds,
             strength=strength,
             split_ratio=split_ratio,
             save_path=str(result_dir),
             filename_suffix="",
-            model_dir=self.config.model_dir,
-            flux_fill_path=self.config.flux_fill_path,
-            flux_redux_path=self.config.flux_redux_path,
-            ia_lora_path=self.config.ia_lora_path,
-            device=self.config.device,
+            net=self._ia_net,
+            return_image=True,
         )
 
-        return
+        return result
+
+    def infer_images(
+        self,
+        *,
+        background: np.ndarray,
+        foreground: np.ndarray,
+        foreground_mask: np.ndarray,
+        bbox_xyxy: tuple[int, int, int, int],
+        mode: Literal["aggressive", "conservative"] = "conservative",
+        verbose: bool = False,
+        seed: int = 123,
+        strength: float = 1.0,
+        split_ratio: float = 0.5,
+        save_path: str | Path | None = None,
+        filename_suffix: str = "",
+    ) -> np.ndarray | None:
+        if background.ndim != 3:
+            raise ValueError("background must be HxWx3")
+        h, w = background.shape[:2]
+
+        out_dir = str(save_path) if save_path is not None else "./result"
+
+        if verbose and save_path is not None:
+            inter_dir = Path(save_path) / "intermediates"
+            os.makedirs(inter_dir, exist_ok=True)
+
+        # InsertAnything expects a list of seeds.
+        seeds = [seed]
+
+        if mode == "aggressive":
+            objectstitch_ckpt = self.config.objectstitch_ckpt_path
+            if objectstitch_ckpt is None:
+                objectstitch_ckpt = self.config.model_dir / "objectstitch" / "v1" / "model.ckpt"
+
+            objectstitch_cfg = self.config.objectstitch_config_path
+            if objectstitch_cfg is None:
+                objectstitch_cfg = self.config.model_dir / "objectstitch" / "v1" / "configs" / "v1.yaml"
+
+            os_cfg = ObjectStitchConfig(
+                ckpt_path=objectstitch_ckpt,
+                config_path=objectstitch_cfg,
+                clip_dir=self.config.objectstitch_clip_dir,
+                device=self.config.device,
+            )
+            os_rgb = run_objectstitch_single_image_from_images(
+                background=background[:, :, ::-1],
+                foreground=foreground[:, :, ::-1],
+                foreground_mask=foreground_mask,
+                bbox_xyxy=tuple(bbox_xyxy),
+                config=os_cfg,
+                seed=seed,
+            )
+
+            sam_ckpt = self.config.sam_checkpoint
+            if sam_ckpt is None:
+                sam_ckpt = self.config.model_dir / "sam" / "sam_vit_h_4b8939.pth"
+            sam_cfg = SamOnObjectStitchConfig(
+                sam_checkpoint=sam_ckpt,
+                device=self.config.device,
+            )
+
+            sam_mask = run_sam_on_objectstitch(
+                os_image=cv2.cvtColor(os_rgb, cv2.COLOR_RGB2BGR),
+                bg_shape_hw=(h, w),
+                bbox_xyxy_bg=tuple(bbox_xyxy),
+                config=sam_cfg,
+            )
+
+            bg_bgr = background
+            os_bgr = cv2.cvtColor(os_rgb, cv2.COLOR_RGB2BGR)
+            hh, ww = bg_bgr.shape[:2]
+            os_bgr = cv2.resize(os_bgr, (ww, hh), interpolation=cv2.INTER_AREA)
+            if sam_mask.shape[:2] != (hh, ww):
+                sam_mask = cv2.resize(sam_mask, (ww, hh), interpolation=cv2.INTER_NEAREST)
+
+            m = (sam_mask > 127).astype(np.float32)
+            m3 = np.stack([m, m, m], axis=-1)
+            src_bgr = bg_bgr.astype(np.float32) * (1.0 - m3) + os_bgr.astype(np.float32) * m3
+            src_bgr = np.clip(src_bgr, 0, 255).astype(np.uint8)
+
+            bbox_mask = make_rect_mask_from_bbox(h, w, list(bbox_xyxy))
+
+            if verbose and save_path is not None:
+                inter_dir = Path(save_path) / "intermediates"
+                cv2.imwrite(str(inter_dir / "objectstitch_coarse_rgb.png"), cv2.cvtColor(os_rgb, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(str(inter_dir / "sam_mask.png"), sam_mask)
+                cv2.imwrite(str(inter_dir / "blended_source.png"), src_bgr)
+                cv2.imwrite(str(inter_dir / "bbox_mask.png"), bbox_mask)
+
+            return insertanything_infer(
+                source_image=cv2.cvtColor(src_bgr, cv2.COLOR_BGR2RGB),
+                mask_image=bbox_mask,
+                ref_image=cv2.cvtColor(foreground, cv2.COLOR_BGR2RGB),
+                ref_mask=foreground_mask,
+                sam_mask=sam_mask,
+                seeds=seeds,
+                strength=strength,
+                split_ratio=split_ratio,
+                save_path=out_dir,
+                filename_suffix=filename_suffix,
+                net=self._ia_net,
+                return_image=True,
+            )
+
+        if mode != "conservative":
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        mask = make_rect_mask_from_bbox(h, w, list(bbox_xyxy))
+
+        return insertanything_infer(
+            source_image=cv2.cvtColor(background, cv2.COLOR_BGR2RGB),
+            mask_image=mask,
+            ref_image=cv2.cvtColor(foreground, cv2.COLOR_BGR2RGB),
+            ref_mask=foreground_mask,
+            seeds=seeds,
+            strength=strength,
+            split_ratio=split_ratio,
+            save_path=out_dir,
+            filename_suffix=filename_suffix,
+            net=self._ia_net,
+            return_image=True,
+        )

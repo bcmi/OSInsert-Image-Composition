@@ -16,13 +16,17 @@ import argparse
 import sys
 from pathlib import Path
 
+import cv2
+
 try:
     from libcom.os_insert import OSInsertModel
+    from libcom.os_insert.source.utils import load_bbox_txt
 except ModuleNotFoundError:
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
     from libcom.os_insert import OSInsertModel
+    from libcom.os_insert.source.utils import load_bbox_txt
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +95,7 @@ def main() -> None:
     parser.add_argument(
         "--split_ratio",
         type=float,
-        default=0.5,
+        default=0.33,
         help="Aggressive-mode mask schedule split ratio. First split_ratio of timesteps use SAM mask; remaining use bbox mask.",
     )
     parser.add_argument(
@@ -184,6 +188,18 @@ def main() -> None:
         fg_mask = examples_dir / "foreground_mask" / f"{uniq}.png"
         bbox_txt = examples_dir / "bbox" / f"{uniq}.txt"
 
+        bg_img = cv2.imread(str(bg))
+        if bg_img is None:
+            raise FileNotFoundError(bg)
+        fg_img = cv2.imread(str(fg))
+        if fg_img is None:
+            raise FileNotFoundError(fg)
+        fg_mask_img = cv2.imread(str(fg_mask), cv2.IMREAD_GRAYSCALE)
+        if fg_mask_img is None:
+            raise FileNotFoundError(fg_mask)
+
+        bbox = tuple(load_bbox_txt(bbox_txt))
+
         if args.verbose:
             print("[INFO] sample uniq =", uniq)
             print("[INFO] background =", bg)
@@ -200,17 +216,17 @@ def main() -> None:
                     else base_out
                 )
                 out_dir.mkdir(parents=True, exist_ok=True)
-                osinsert(
-                    background_path=bg,
-                    foreground_path=fg,
-                    foreground_mask_path=fg_mask,
-                    bbox_txt_path=bbox_txt,
-                    result_dir=out_dir,
+                osinsert.infer_images(
+                    background=bg_img,
+                    foreground=fg_img,
+                    foreground_mask=fg_mask_img,
+                    bbox_xyxy=bbox,
                     mode="conservative",
                     verbose=args.verbose,
                     seed=args.seed,
                     strength=args.strength,
                     split_ratio=split_ratio,
+                    save_path=out_dir,
                 )
                 print("[INFO] Conservative done ->", out_dir)
 
@@ -222,17 +238,17 @@ def main() -> None:
                     else base_out
                 )
                 out_dir.mkdir(parents=True, exist_ok=True)
-                osinsert(
-                    background_path=bg,
-                    foreground_path=fg,
-                    foreground_mask_path=fg_mask,
-                    bbox_txt_path=bbox_txt,
-                    result_dir=out_dir,
+                osinsert.infer_images(
+                    background=bg_img,
+                    foreground=fg_img,
+                    foreground_mask=fg_mask_img,
+                    bbox_xyxy=bbox,
                     mode="aggressive",
                     verbose=args.verbose,
                     seed=args.seed,
                     strength=args.strength,
                     split_ratio=split_ratio,
+                    save_path=out_dir,
                 )
                 print("[INFO] Aggressive done ->", out_dir)
 

@@ -172,56 +172,107 @@ def _basename_no_ext(x: str | Path | None, fallback: str) -> str:
     return fallback
 
 
-def run_insertanything(
-    source_image_path: str | Path | np.ndarray | Image.Image,
-    mask_image_path: str | Path | np.ndarray | Image.Image,
-    ref_image_path: str | Path | np.ndarray | Image.Image,
-    ref_mask_path: str | Path | np.ndarray | Image.Image,
-    sam_mask_path: str | Path | np.ndarray | Image.Image | None = None,
+class InsertAnythingModel:
+    def __init__(
+        self,
+        *,
+        model_dir: str | Path | None = None,
+        flux_fill_path: str | Path | None = None,
+        flux_redux_path: str | Path | None = None,
+        ia_lora_path: str | Path | None = None,
+        device: str | torch.device | None = None,
+    ) -> None:
+        if device is None:
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        elif not isinstance(device, torch.device):
+            device = torch.device(device)
+
+        self.device = device
+        self.pipe, self.redux = _get_pipes(
+            model_dir,
+            flux_fill_path=flux_fill_path,
+            flux_redux_path=flux_redux_path,
+            ia_lora_path=ia_lora_path,
+            device=device,
+        )
+
+    def __call__(
+        self,
+        *,
+        source_image: str | Path | np.ndarray | Image.Image,
+        mask_image: str | Path | np.ndarray | Image.Image,
+        ref_image: str | Path | np.ndarray | Image.Image,
+        ref_mask: str | Path | np.ndarray | Image.Image,
+        sam_mask: str | Path | np.ndarray | Image.Image | None = None,
+        seeds=123,
+        strength: float | None = None,
+        split_ratio: float = 0.5,
+        save_path: str = "./result",
+        filename_suffix: str = "",
+        return_image: bool = False,
+    ):
+        return _run_insertanything_with_pipes(
+            source_image=source_image,
+            mask_image=mask_image,
+            ref_image=ref_image,
+            ref_mask=ref_mask,
+            sam_mask=sam_mask,
+            seeds=seeds,
+            strength=strength,
+            split_ratio=split_ratio,
+            save_path=save_path,
+            filename_suffix=filename_suffix,
+            return_image=return_image,
+            pipe=self.pipe,
+            redux=self.redux,
+            device=self.device,
+        )
+
+
+def _run_insertanything_with_pipes(
+    *,
+    source_image: str | Path | np.ndarray | Image.Image,
+    mask_image: str | Path | np.ndarray | Image.Image,
+    ref_image: str | Path | np.ndarray | Image.Image,
+    ref_mask: str | Path | np.ndarray | Image.Image,
+    sam_mask: str | Path | np.ndarray | Image.Image | None = None,
     seeds=123,
     strength: float | None = None,
     split_ratio: float = 0.5,
     save_path: str = "./result",
     filename_suffix: str = "",
-    model_dir: str | Path | None = None,
-    flux_fill_path: str | Path | None = None,
-    flux_redux_path: str | Path | None = None,
-    ia_lora_path: str | Path | None = None,
-    device: str | torch.device | None = None,
-    *,
     return_image: bool = False,
+    pipe: FluxFillPipeline,
+    redux: FluxPriorReduxPipeline,
+    device: torch.device,
 ):
-    """Single-image InsertAnything inference following the original diptych pipeline."""
-
     if seeds is None:
         seeds = [666]
 
-    # Load the images and masks
-    ref_image = _to_rgb_numpy(ref_image_path)
-    tar_image = _to_rgb_numpy(source_image_path)
+    ref_image_np = _to_rgb_numpy(ref_image)
+    tar_image = _to_rgb_numpy(source_image)
 
-    ref_mask = _to_mask_u8(ref_mask_path)
-    tar_mask = _to_mask_u8(mask_image_path)
+    ref_mask_np = _to_mask_u8(ref_mask)
+    tar_mask = _to_mask_u8(mask_image)
     tar_mask = cv2.resize(tar_mask, (tar_image.shape[1], tar_image.shape[0]))
 
-    # Optional SAM/ObjectStitch mask for dynamic mask switching in FluxFill
-    sam_mask = None
-    if sam_mask_path is not None:
-        sam_mask = _to_mask_u8(sam_mask_path)
-        sam_mask = cv2.resize(sam_mask, (tar_image.shape[1], tar_image.shape[0]))
+    sam_mask_np = None
+    if sam_mask is not None:
+        sam_mask_np = _to_mask_u8(sam_mask)
+        sam_mask_np = cv2.resize(sam_mask_np, (tar_image.shape[1], tar_image.shape[0]))
 
     # Remove the background information of the reference picture
-    ref_box_yyxx = get_bbox_from_mask(ref_mask)
-    ref_mask_3 = np.stack([ref_mask, ref_mask, ref_mask], -1)
-    masked_ref_image = ref_image * ref_mask_3 + np.ones_like(ref_image) * 255 * (1 - ref_mask_3)
+    ref_box_yyxx = get_bbox_from_mask(ref_mask_np)
+    ref_mask_3 = np.stack([ref_mask_np, ref_mask_np, ref_mask_np], -1)
+    masked_ref_image = ref_image_np * ref_mask_3 + np.ones_like(ref_image_np) * 255 * (1 - ref_mask_3)
 
     # Extract the box where the reference image is located, and place the reference
     # object at the center of the image
     y1, y2, x1, x2 = ref_box_yyxx
     masked_ref_image = masked_ref_image[y1:y2, x1:x2, :]
-    ref_mask = ref_mask[y1:y2, x1:x2]
+    ref_mask_crop = ref_mask_np[y1:y2, x1:x2]
     ratio = 1.3
-    masked_ref_image, ref_mask = expand_image_mask(masked_ref_image, ref_mask, ratio=ratio)
+    masked_ref_image, ref_mask_crop = expand_image_mask(masked_ref_image, ref_mask_crop, ratio=ratio)
     masked_ref_image = pad_to_square(masked_ref_image, pad_value=255, random=False)
 
     # Dilate the mask
@@ -240,30 +291,17 @@ def run_insertanything(
     old_tar_image = tar_image.copy()
     tar_image = tar_image[y1:y2, x1:x2, :]
     tar_mask = tar_mask[y1:y2, x1:x2]
-    if sam_mask is not None:
-        sam_mask = sam_mask[y1:y2, x1:x2]
+    if sam_mask_np is not None:
+        sam_mask_np = sam_mask_np[y1:y2, x1:x2]
 
     H1, W1 = tar_image.shape[0], tar_image.shape[1]
 
     tar_mask = pad_to_square(tar_mask, pad_value=0)
     tar_mask = cv2.resize(tar_mask, size)
 
-    if sam_mask is not None:
-        sam_mask = pad_to_square(sam_mask, pad_value=0)
-        sam_mask = cv2.resize(sam_mask, size)
-
-    if device is None:
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(device)
-
-    pipe, redux = _get_pipes(
-        model_dir,
-        flux_fill_path=flux_fill_path,
-        flux_redux_path=flux_redux_path,
-        ia_lora_path=ia_lora_path,
-        device=device,
-    )
+    if sam_mask_np is not None:
+        sam_mask_np = pad_to_square(sam_mask_np, pad_value=0)
+        sam_mask_np = cv2.resize(sam_mask_np, size)
 
     # Extract the features of the reference image
     masked_ref_image = cv2.resize(masked_ref_image.astype(np.uint8), size).astype(np.uint8)
@@ -284,8 +322,8 @@ def run_insertanything(
 
     # SAM/ObjectStitch-based mask for the first half of denoising (sam_mask)
     sam_mask_diptych = None
-    if sam_mask is not None:
-        sam_mask_rgb = np.stack([sam_mask, sam_mask, sam_mask], -1)
+    if sam_mask_np is not None:
+        sam_mask_rgb = np.stack([sam_mask_np, sam_mask_np, sam_mask_np], -1)
         sam_mask_diptych = np.concatenate([mask_black, sam_mask_rgb], axis=1)
 
     diptych_ref_tar = Image.fromarray(diptych_ref_tar)
@@ -312,7 +350,6 @@ def run_insertanything(
             max_sequence_length=512,
             generator=generator,
             strength=strength if strength is not None else 1.0,
-            # Dynamic mask switching inside FluxFillPipeline: first half SAM, second half bbox
             sam_mask=sam_mask_diptych,
             bbox_mask=bbox_mask_diptych,
             split_ratio=split_ratio,
@@ -333,22 +370,121 @@ def run_insertanything(
             np.array([H1, W1, H2, W2]),
             np.array(tar_box_yyxx_crop),
         )
-        edited_image = Image.fromarray(edited_image)
+        edited_pil = Image.fromarray(edited_image)
 
-        ref_without_ext = _basename_no_ext(ref_mask_path if isinstance(ref_mask_path, (str, Path)) else None, "ref")
-        tar_without_ext = _basename_no_ext(mask_image_path if isinstance(mask_image_path, (str, Path)) else None, "tar")
+        ref_without_ext = _basename_no_ext(ref_mask if isinstance(ref_mask, (str, Path)) else None, "ref")
+        tar_without_ext = _basename_no_ext(mask_image if isinstance(mask_image, (str, Path)) else None, "tar")
 
         suffix = filename_suffix if filename_suffix else ""
         edited_image_save_path = os.path.join(
             save_path,
             f"{ref_without_ext}_to_{tar_without_ext}_seed{seed}{suffix}.png",
         )
-        edited_image.save(edited_image_save_path)
+        edited_pil.save(edited_image_save_path)
 
         if return_image:
-            return np.array(edited_image)
+            return np.array(edited_pil)
 
     return None
+
+
+def run_insertanything(
+    source_image_path: str | Path | np.ndarray | Image.Image,
+    mask_image_path: str | Path | np.ndarray | Image.Image,
+    ref_image_path: str | Path | np.ndarray | Image.Image,
+    ref_mask_path: str | Path | np.ndarray | Image.Image,
+    sam_mask_path: str | Path | np.ndarray | Image.Image | None = None,
+    seeds=123,
+    strength: float | None = None,
+    split_ratio: float = 0.5,
+    save_path: str = "./result",
+    filename_suffix: str = "",
+    model_dir: str | Path | None = None,
+    flux_fill_path: str | Path | None = None,
+    flux_redux_path: str | Path | None = None,
+    ia_lora_path: str | Path | None = None,
+    device: str | torch.device | None = None,
+    net: InsertAnythingModel | None = None,
+    *,
+    return_image: bool = False,
+):
+    """Single-image InsertAnything inference following the original diptych pipeline."""
+
+    if net is None:
+        if device is None:
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        else:
+            device = torch.device(device)
+        pipe, redux = _get_pipes(
+            model_dir,
+            flux_fill_path=flux_fill_path,
+            flux_redux_path=flux_redux_path,
+            ia_lora_path=ia_lora_path,
+            device=device,
+        )
+    else:
+        pipe, redux, device = net.pipe, net.redux, net.device
+
+    return _run_insertanything_with_pipes(
+        source_image=source_image_path,
+        mask_image=mask_image_path,
+        ref_image=ref_image_path,
+        ref_mask=ref_mask_path,
+        sam_mask=sam_mask_path,
+        seeds=seeds,
+        strength=strength,
+        split_ratio=split_ratio,
+        save_path=save_path,
+        filename_suffix=filename_suffix,
+        return_image=return_image,
+        pipe=pipe,
+        redux=redux,
+        device=device,
+    )
+
+
+def insertanything_infer(
+    *,
+    source_image: str | Path | np.ndarray | Image.Image,
+    mask_image: str | Path | np.ndarray | Image.Image,
+    ref_image: str | Path | np.ndarray | Image.Image,
+    ref_mask: str | Path | np.ndarray | Image.Image,
+    sam_mask: str | Path | np.ndarray | Image.Image | None = None,
+    seeds=123,
+    strength: float | None = None,
+    split_ratio: float = 0.5,
+    save_path: str = "./result",
+    filename_suffix: str = "",
+    net: InsertAnythingModel | None = None,
+    model_dir: str | Path | None = None,
+    flux_fill_path: str | Path | None = None,
+    flux_redux_path: str | Path | None = None,
+    ia_lora_path: str | Path | None = None,
+    device: str | torch.device | None = None,
+    return_image: bool = True,
+):
+    if net is None:
+        net = InsertAnythingModel(
+            model_dir=model_dir,
+            flux_fill_path=flux_fill_path,
+            flux_redux_path=flux_redux_path,
+            ia_lora_path=ia_lora_path,
+            device=device,
+        )
+
+    return net(
+        source_image=source_image,
+        mask_image=mask_image,
+        ref_image=ref_image,
+        ref_mask=ref_mask,
+        sam_mask=sam_mask,
+        seeds=seeds,
+        strength=strength,
+        split_ratio=split_ratio,
+        save_path=save_path,
+        filename_suffix=filename_suffix,
+        return_image=return_image,
+    )
 
 
 def main():

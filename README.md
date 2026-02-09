@@ -1,20 +1,13 @@
 # OSInsert-Image-Composition
 
-OSInsert is a two-stage object insertion pipeline. This repository packages the
-minimal inference code for ObjectStitch, SAM, and InsertAnything into the
-`libcom/os_insert` module.
+OSInsert is a two-stage object insertion pipeline. This repository packages the minimal inference code for ObjectStitch, SAM, and InsertAnything into the `libcom/os_insert` module.
 
-- **Stage 1 (ObjectStitch)**: generate a **coarse composite** on the target
-  background image.  
-- **Stage 2 (SAM + InsertAnything)**: apply SAM to obtain a foreground
-  insertion mask, then combine the "original background + ObjectStitch output + SAM mask" into a source image and mask, and feed them into InsertAnything
-  to obtain a **high-quality final insertion result**.
+- **Stage 1 (ObjectStitch)**: generate a **coarse composite** on the target background image.  
+- **Stage 2 (SAM + InsertAnything)**: apply SAM to obtain the insertion mask, then combine “original background + ObjectStitch output + SAM mask” into a source image and mask, and feed them into InsertAnything to obtain a **high-quality final insertion result**.
 
 ## 0. Example Results
 
-The table below shows several samples at different stages (from left to right:
-background, foreground, aggressive mode (ObjectStitch + SAM + InsertAnything),
-and conservative mode (InsertAnything only)).
+The table below shows several samples at different stages (from left to right: background, foreground, aggressive mode (ObjectStitch + SAM + InsertAnything), and conservative mode (InsertAnything only)).
 
 | Sample   | Background                                            | Foreground                                              | aggressive (OSInsert, full pipeline)                              | conservative (InsertAnything)                                     |
 |----------|-------------------------------------------------------|---------------------------------------------------------|--------------------------------------------------------------------|--------------------------------------------------------------------|
@@ -27,7 +20,11 @@ and conservative mode (InsertAnything only)).
 
 ---
 
-## 1. Environment
+## 1. Quick Start
+
+This section covers the full workflow from installing dependencies and downloading models to running the demo.
+
+### 1.1 Environment & Dependencies
 
 Example environment configuration:
 
@@ -43,37 +40,49 @@ conda activate osinsert
 pip install -r requirements.txt
 ```
 
-> Note: This repository **does not include any pretrained weights**. Checkpoints
-> must be downloaded via the links below and configured via the local directory
-> structure or environment variables.
+### 1.2 Diffusers Patch (aggressive mode mask switching)
 
----
+Aggressive mode uses a dynamic mask schedule inside `diffusers`' `FluxFillPipeline`: the first part of denoising uses the SAM/ObjectStitch mask and the remaining steps use the bbox mask. This requires a patched `diffusers` implementation.
 
-## 2. Models and Directory Layout
+After installing dependencies, apply the patch **manually** in the same Python environment you will run OSInsert with (typically once per environment; rerun if you reinstall `diffusers`). Conservative mode does not require this patch.
 
-This repository is **self-contained** and no longer depends on external
-ObjectStitch / InsertAnything source repositories. All inference-related code
-resides under `libcom/os_insert`. All checkpoints are organized under the
-`model_dir/` directory:
-
-```text
-model_dir/
-  flux/
-    FLUX.1-Fill-dev/
-    FLUX.1-Redux-dev/
-  insert_anything/
-    20250321_steps5000_pytorch_lora_weights.safetensors
-  objectstitch/
-    v1/
-      model.ckpt                      # -> ObjectStitch.pth
-      configs/
-        v1.yaml
-      openai-clip-vit-large-patch14/  # CLIP weights directory
-  sam/
-    sam_vit_h_4b8939.pth
+```bash
+python scripts/patch_diffusers_fluxfill.py
 ```
 
-### 2.1 Checkpoints
+Optional: preview the changes without modifying files:
+
+```bash
+python scripts/patch_diffusers_fluxfill.py --dry-run
+```
+
+The script is idempotent (safe to run multiple times) and will create a timestamped backup next to the patched file.
+
+> Note: This repository **does not include any pretrained weights**. Checkpoints must be downloaded via the links below and configured via the local directory structure or environment variables.
+
+
+### 1.3 Download Models & Directory Layout
+
+`model_dir/` directory structure:
+
+```bash
+model_dir/
+├── flux/
+│   ├── FLUX.1-Fill-dev/
+│   └── FLUX.1-Redux-dev/
+├── insert_anything/
+│   └── 20250321_steps5000_pytorch_lora_weights.safetensors
+├── objectstitch/
+│   └── v1/
+│       ├── model.ckpt                      # -> ObjectStitch.pth
+│       ├── configs/
+│       │   └── v1.yaml
+│       └── openai-clip-vit-large-patch14/  # CLIP weights directory
+└── sam/
+    └── sam_vit_h_4b8939.pth
+```
+
+### 1.4 Checkpoints
 
 - **ObjectStitch checkpoint**:
   - openai-clip-vit-large-patch14  
@@ -93,14 +102,115 @@ model_dir/
   - FLUX.1-Fill-dev: <https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev/resolve/main/flux1-fill-dev.safetensors>  
   - FLUX.1-Redux-dev: <https://huggingface.co/black-forest-labs/FLUX.1-Redux-dev/resolve/main/flux1-redux-dev.safetensors>
 
-After downloading, organize all files according to the directory structure
-above. The following environment variables can override default paths:
+After downloading, organize all files according to the directory structure above. The following environment variables can override default paths:
 
 - `FLUX_FILL_PATH`
 - `FLUX_REDUX_PATH`
 - `IA_LORA_PATH`
 
 If these variables are not set, the defaults under `model_dir/...` are used.
+
+
+---
+
+## 2. Run the Demo (OSInsertModel)
+
+The main entry script is `tests/test_os_insert.py`, which calls `libcom.os_insert.OSInsertModel`.
+
+### 2.1 Demo Data
+
+The repository includes demo data under `examples/`, which should contain at least the following files:
+
+- `examples/background/Demo_0.png`
+- `examples/foreground/Demo_0.png`
+- `examples/foreground_mask/Demo_0.png`
+- `examples/bbox/Demo_0.txt`
+
+### 2.2 Running Conservative / Aggressive Modes
+
+`tests/test_os_insert.py` exposes a `--mode` argument to select the run mode:
+
+- `conservative`: use InsertAnything only, performing insertion within the bbox region on the background image.
+- `aggressive`: full two-stage pipeline: ObjectStitch → SAM → InsertAnything.
+
+Example commands:
+
+```bash
+conda activate osinsert
+cd OSInsert-Image-Composition
+
+# Conservative mode (default)
+python -m test_os_insert --mode conservative --uniq_id Demo_0
+
+# Aggressive mode (ObjectStitch + SAM + InsertAnything)
+# Minimal aggressive demo (uses defaults: uniq_id=Demo_0, device=cuda:0, split_ratio=0.33, seed=123)
+python -m test_os_insert --mode aggressive
+
+# Maximal / reproducible aggressive run (explicitly fix key knobs)
+python -m test_os_insert --mode aggressive --uniq_id Demo_0 --device cuda:0 --split_ratio 0.33 --seed 123
+
+# Notes
+# - You can freely remove optional flags (e.g. --device/--split_ratio/--seed/--verbose) and rely on defaults.
+# - Use --uniq_id to switch which sample under examples/ to run.
+```
+
+Outputs are written to:
+
+- `result_dir/osinsert_demo/`: conservative mode results.  
+- `result_dir/osinsert_demo_aggressive/`: aggressive mode results.
+
+In aggressive mode, setting `--verbose` additionally keeps intermediate files under `result_dir/*/intermediates/`, including:
+
+- `objectstitch_coarse_rgb.png`: ObjectStitch coarse composite (BGR PNG).  
+- `sam_mask.png`: raw SAM mask on the coarse composite.  
+- `blended_source.png`: background and ObjectStitch composite blended by the SAM mask (source image).  
+- `bbox_mask.png`: bbox (rectangular) mask used for the second phase.
+
+### 2.3 OSInsertModel API Overview
+
+The unified `OSInsertModel` is implemented in `libcom/os_insert/os_insert.py`:
+
+```python
+from libcom.os_insert import OSInsertModel
+from libcom.os_insert.source.utils import load_bbox_txt
+
+import cv2
+
+model = OSInsertModel(model_dir="model_dir", device="cuda:0")
+
+bg = cv2.imread("examples/background/Demo_0.png")
+fg = cv2.imread("examples/foreground/Demo_0.png")
+fg_mask = cv2.imread("examples/foreground_mask/Demo_0.png", cv2.IMREAD_GRAYSCALE)
+
+bbox = tuple(load_bbox_txt("examples/bbox/Demo_0.txt"))
+
+out = model.infer_images(
+    background=bg,
+    foreground=fg,
+    foreground_mask=fg_mask,
+    bbox_xyxy=bbox,               # (x1, y1, x2, y2)
+    mode="aggressive",          # or "conservative"
+    verbose=False,               # if True and save_path is set, save intermediates to save_path/intermediates
+    seed=123,
+    strength=1.0,
+    split_ratio=0.33,            # first part SAM-mask, second part bbox-mask
+    save_path="result_dir/osinsert_demo_aggressive",
+)
+```
+
+The internal behavior is as follows:
+
+- `conservative`:  
+  - Use `background + bbox` to construct a rectangular mask.  
+  - Call InsertAnything directly on this region.
+
+- `aggressive`:  
+  - ObjectStitch: generate a coarse composite `objectstitch_coarse.png` on the background.  
+  - SAM: run SAM on the coarse composite with the bbox and obtain a binary mask.  
+  - Blending: blend the original background and the coarse composite according to the SAM mask to form a new source image and mask (aligned to the original background resolution).  
+  - InsertAnything: run InsertAnything on this region to obtain the final high-quality insertion result. During denoising, OSInsert uses a two-phase mask schedule: the first part of timesteps uses the ObjectStitch/SAM mask, and the remaining steps use a bbox (rectangular) mask to encourage more complete shadow/illumination synthesis.
+
+In aggressive mode, `seed` is also used to seed the ObjectStitch sampling step so that results are reproducible.
 
 ---
 
@@ -119,151 +229,22 @@ The TSV list file contains the following columns:
 uniq_id \t bg_path \t fg_path \t fg_mask_path
 ```
 
-### 3.1 Built-in Demo Data
-
-This repository provides a **minimal runnable demo**:
-
-- `examples/samples_demo.tsv`
-- `examples/background/Demo_0.png`
-- `examples/foreground/Demo_0.png`
-- `examples/foreground_mask/Demo_0.png`
-- `examples/bbox/Demo_0.txt`
-
 Typical usage:
 
-- Directly reuse these demo files to verify the pipeline.  
-- Replace the images with custom data while keeping the same filenames and
-  directory structure.  
-- Create a new TSV and `os_test` directory, and pass their paths via script
-  arguments.
+- Directly reuse the demo files under `examples/` to verify the pipeline.  
+- Replace the images with custom data while keeping the same filenames and directory structure.  
+- Create a new TSV and `os_test` directory, and pass their paths via script arguments.
 
 ---
 
-## 4. One-Click Demo: OSInsertModel
+## 4. Configuration Notes
 
-The main entry script is `tests/test_os_insert.py`, which calls
-`libcom.os_insert.OSInsertModel`. Legacy multi-script pipelines such as
-`osinsert/run_osinsert_full.py` are no longer required.
+### 4.1 Single place to edit checkpoint paths
 
-### 4.1 Demo Data
+For convenience, `tests/test_os_insert.py` contains a top-level `CONFIG` block where you can override all checkpoint paths (ObjectStitch / SAM / FLUX / LoRA) in one place. Any relative paths in that block are resolved against the repo root at runtime.
 
-The repository includes demo data under:
+### 4.2 About `libcom/os_insert/source/ldm`
 
-- `examples/background/Demo_0.png`
-- `examples/foreground/Demo_0.png`
-- `examples/foreground_mask/Demo_0.png`
-- `examples/bbox/Demo_0.txt`
+`libcom/os_insert/source/ldm` is a bundled copy of the minimal LDM code used by ObjectStitch.
 
-These files can be replaced (while keeping filenames unchanged) for quick
-custom tests.
-
-### 4.2 Running Conservative / Aggressive Modes
-
-`tests/test_os_insert.py` exposes a `--mode` argument to select the run mode:
-
-- `conservative`: use InsertAnything only, performing insertion within the bbox
-  region on the background image.
-- `aggressive`: full two-stage pipeline: ObjectStitch → SAM → InsertAnything.
-
-Example commands:
-
-```bash
-conda activate osinsert
-cd OSInsert-Image-Composition
-
-# Conservative mode (default)
-python -m test_os_insert --mode conservative --uniq_id Demo_0
-
-# Aggressive mode (ObjectStitch + SAM + InsertAnything)
-# Minimal aggressive demo (uses defaults: uniq_id=Bus_2, device=cuda:0, split_ratio=0.5, seed=123)
-python -m test_os_insert --mode aggressive
-
-# Maximal / reproducible aggressive run (explicitly fix key knobs)
-python -m test_os_insert --mode aggressive --uniq_id Demo_0 --device cuda:0 --split_ratio 0.5 --seed 123
-
-# Notes
-# - You can freely remove optional flags (e.g. --device/--split_ratio/--seed/--verbose) and rely on defaults.
-# - Use --uniq_id to switch which sample under examples/ to run.
-```
-
-Outputs are written to:
-
-- `result_dir/osinsert_demo/`: conservative mode results.  
-- `result_dir/osinsert_demo_aggressive/`: aggressive mode results.
-
-In aggressive mode, setting `--verbose` additionally keeps intermediate files
-under `result_dir/*/intermediates/`, including:
-
-- `objectstitch_coarse_rgb.png`: ObjectStitch coarse composite (BGR PNG).  
-- `sam_mask.png`: raw SAM mask on the coarse composite.  
-- `blended_source.png`: background and ObjectStitch composite blended by the SAM
-  mask (source image).  
-- `bbox_mask.png`: bbox (rectangular) mask used for the second phase.
-
-### 4.3 OSInsertModel API Overview
-
-The unified `OSInsertModel` is defined in `libcom/os_insert/os_insert.py`:
-
-```python
-from libcom.os_insert import OSInsertModel
-
-model = OSInsertModel(model_dir="model_dir", device="cuda:0")
-
-model(
-    background_path="examples/background/Demo_0.png",
-    foreground_path="examples/foreground/Demo_0.png",
-    foreground_mask_path="examples/foreground_mask/Demo_0.png",
-    bbox_txt_path="examples/bbox/Demo_0.txt",
-    result_dir="result_dir/osinsert_demo_aggressive",
-    mode="aggressive",          # or "conservative"
-    verbose=False,               # if True, save intermediate artifacts
-    seed=123,
-    strength=1.0,
-    split_ratio=0.5,             # first half SAM-mask, second half bbox-mask
-)
-```
-
-The internal behavior is as follows:
-
-- `conservative`:  
-  - Use `background + bbox` to construct a rectangular mask.  
-  - Call InsertAnything directly on this region.
-
-- `aggressive`:  
-  - ObjectStitch: generate a coarse composite `objectstitch_coarse.png` on the
-    background.  
-  - SAM: run SAM on the coarse composite with the bbox and obtain a binary
-    mask.  
-  - Blending: blend the original background and the coarse composite according
-    to the SAM mask to form a new source image and mask (aligned to the
-    original background resolution).  
-  - InsertAnything: run InsertAnything on this region to obtain the final
-    high-quality insertion result. During the denoising process, OSInsert uses
-    a two-phase mask schedule: the first half of timesteps uses the
-    ObjectStitch/SAM mask, and the second half uses a bbox (rectangular) mask
-    to encourage more complete shadow/illumination synthesis.
-
-In aggressive mode, `seed` is also used to seed the ObjectStitch sampling step
-so that the coarse composite (and thus downstream SAM / blending) is
-reproducible.
-
----
-
-## 5. Configuration Notes
-
-### 5.1 Single place to edit checkpoint paths
-
-For convenience, `tests/test_os_insert.py` contains a top-level `CONFIG` block
-where you can override all checkpoint paths (ObjectStitch / SAM / FLUX / LoRA)
-in one place. Any relative paths in that block are resolved against the repo
-root at runtime.
-
-### 5.2 About `libcom/os_insert/source/ldm`
-
-`libcom/os_insert/source/ldm` is a bundled copy of the minimal LDM code used by
-ObjectStitch.
-
-When running, `libcom/os_insert/source/objectstitch_infer.py` automatically
-adds its own source directory to `sys.path`, so imports like
-`from ldm.models.diffusion.ddim import DDIMSampler` work without requiring you
-to manually set `PYTHONPATH` or any environment variables.
+When running, `libcom/os_insert/source/objectstitch_infer.py` automatically adds its own source directory to `sys.path`, so you do not need to manually set `PYTHONPATH` or any other environment variables.

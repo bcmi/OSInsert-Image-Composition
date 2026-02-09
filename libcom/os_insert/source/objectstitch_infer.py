@@ -198,6 +198,77 @@ def generate_image_batch(
     }
 
 
+def _ensure_pil_rgb(image: np.ndarray | Image.Image) -> Image.Image:
+    if isinstance(image, Image.Image):
+        return image.convert("RGB")
+    if not isinstance(image, np.ndarray):
+        raise TypeError("Expected numpy array or PIL.Image")
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("Expected HxWx3 image")
+    return Image.fromarray(image.astype(np.uint8), mode="RGB")
+
+
+def _ensure_mask_uint8(mask: np.ndarray | Image.Image) -> np.ndarray:
+    if isinstance(mask, Image.Image):
+        mask_np = np.asarray(mask)
+    elif isinstance(mask, np.ndarray):
+        mask_np = mask
+    else:
+        raise TypeError("Expected numpy array or PIL.Image for mask")
+
+    if mask_np.ndim == 3:
+        mask_np = mask_np[:, :, 0]
+    if mask_np.ndim != 2:
+        raise ValueError("Expected HxW mask")
+    return mask_np.astype(np.uint8)
+
+
+def generate_image_batch_from_images(
+    bg_image: np.ndarray | Image.Image,
+    fg_image: np.ndarray | Image.Image,
+    bbox_xyxy: Tuple[int, int, int, int],
+    fg_mask: np.ndarray | Image.Image,
+) -> dict:
+    """In-memory version of :func:`generate_image_batch`.
+
+    Parameters are identical in semantics, but accept already-loaded images.
+    """
+
+    bg_img = _ensure_pil_rgb(bg_image)
+    bg_w, bg_h = bg_img.size
+    bg_t = sd_transform(bg_img)
+
+    fg_img = _ensure_pil_rgb(fg_image)
+    fg_mask_np = _ensure_mask_uint8(fg_mask)
+
+    if fg_mask_np.shape[0] != fg_img.height or fg_mask_np.shape[1] != fg_img.width:
+        fg_mask_pil = Image.fromarray(fg_mask_np)
+        fg_mask_pil = fg_mask_pil.resize((fg_img.width, fg_img.height))
+        fg_mask_np = np.asarray(fg_mask_pil).astype(np.uint8)
+
+    black = np.zeros((fg_img.height, fg_img.width, 3), dtype=np.uint8)
+    fg_img_np = np.asarray(fg_img).astype(np.uint8)
+    fg_img_np = np.where(fg_mask_np[:, :, None] > 127, fg_img_np, black)
+    fg_img = Image.fromarray(fg_img_np)
+
+    fg_t = clip_transform(fg_img)
+
+    mask_np = bbox2mask(bbox_xyxy, bg_w, bg_h)
+    mask = Image.fromarray(mask_np)
+    mask_t = mask_transform(mask)
+    mask_t = torch.where(mask_t > 0.5, 1, 0).float()
+
+    inpaint_t = bg_t * (1 - mask_t)
+    bbox_t = get_bbox_tensor(bbox_xyxy, bg_w, bg_h)
+
+    return {
+        "bg_img": inpaint_t.unsqueeze(0),
+        "bg_mask": mask_t.unsqueeze(0),
+        "fg_img": fg_t.unsqueeze(0),
+        "bbox": bbox_t.unsqueeze(0),
+    }
+
+
 def prepare_input(
     batch: dict,
     model: torch.nn.Module,
@@ -386,6 +457,77 @@ def run_objectstitch_single_image(
     start_code = torch.randn((num_samples, *latent_shape), device=device)
 
     batch = generate_image_batch(bg_path, fg_path, bbox_xyxy, fg_mask_path)
+    test_model_kwargs, c, uc = prepare_input(batch, model, latent_shape, device, num_samples)
+
+    samples_ddim, _ = sampler.sample(
+        S=sample_steps,
+        conditioning=c,
+        batch_size=num_samples,
+        shape=list(latent_shape),
+        verbose=False,
+        eta=0.0,
+        x_T=start_code,
+        unconditional_guidance_scale=guidance_scale,
+        unconditional_conditioning=uc,
+        test_model_kwargs=test_model_kwargs,
+    )
+
+    x_samples_ddim = model.decode_first_stage(samples_ddim[:, :4]).cpu().float()
+    comp_img = tensor2numpy(x_samples_ddim, image_size=img_size)
+    return comp_img[0]
+
+
+def run_objectstitch_single_image_from_images(
+    *,
+    background: np.ndarray | Image.Image,
+    foreground: np.ndarray | Image.Image,
+    foreground_mask: np.ndarray | Image.Image,
+    bbox_xyxy: Tuple[int, int, int, int],
+    config: ObjectStitchConfig,
+    seed: int | None = None,
+) -> np.ndarray:
+    """Run ObjectStitch for a single sample and return the coarse composite image (RGB uint8).
+
+    This is the in-memory variant of :func:`run_objectstitch_single_image`.
+    """
+
+    cfg = OmegaConf.load(str(config.config_path))
+    clip_dir = config.clip_dir
+    if clip_dir is None:
+        clip_dir = config.config_path.parent / "openai-clip-vit-large-patch14"
+        if not clip_dir.exists():
+            clip_dir = config.ckpt_path.parent / "openai-clip-vit-large-patch14"
+    if clip_dir is not None and Path(clip_dir).exists():
+        cfg.model.params.cond_stage_config.params.version = str(clip_dir)
+
+    model = instantiate_from_config(cfg["model"])
+    pl_sd = torch.load(str(config.ckpt_path), map_location="cpu")
+    sd = pl_sd["state_dict"] if "state_dict" in pl_sd else pl_sd
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    if missing:
+        print("[ObjectStitch] missing keys:", missing)
+    if unexpected:
+        print("[ObjectStitch] unexpected keys:", unexpected)
+
+    device = torch.device(config.device)
+    model = model.to(device)
+    model.eval()
+
+    img_size = (512, 512)
+    latent_shape = (4, img_size[1] // 8, img_size[0] // 8)
+    sample_steps = 50
+    num_samples = 1
+    guidance_scale = 5.0
+
+    sampler = DDIMSampler(model)
+
+    if seed is not None:
+        torch.manual_seed(int(seed))
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(int(seed))
+    start_code = torch.randn((num_samples, *latent_shape), device=device)
+
+    batch = generate_image_batch_from_images(background, foreground, bbox_xyxy, foreground_mask)
     test_model_kwargs, c, uc = prepare_input(batch, model, latent_shape, device, num_samples)
 
     samples_ddim, _ = sampler.sample(
