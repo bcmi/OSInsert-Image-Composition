@@ -15,8 +15,15 @@ from .source.objectstitch_infer import (
     ObjectStitchConfig,
     run_objectstitch_single_image,
     run_objectstitch_single_image_from_images,
+    load_objectstitch_model_and_sampler,
+    run_objectstitch_single_image_from_images_cached,
 )
-from .source.sam_on_objectstitch import SamOnObjectStitchConfig, run_sam_on_objectstitch
+from .source.sam_on_objectstitch import (
+    SamOnObjectStitchConfig,
+    build_sam_predictor,
+    run_sam_on_objectstitch,
+    run_sam_on_objectstitch_with_predictor,
+)
 from .source.utils import load_bbox_txt, make_rect_mask_from_bbox
 
 
@@ -39,8 +46,14 @@ class OSInsertModel:
 
     Modes
     -----
-    - ``aggressive``: ObjectStitch + SAM + InsertAnything (not yet implemented)
-    - ``conservative``: bg + bbox -> mask -> InsertAnything
+    - ``aggressive``: ObjectStitch + SAM + InsertAnything
+    - ``conservative``: background + bbox -> mask -> InsertAnything
+
+    Notes
+    -----
+    - InsertAnything is initialized when the model instance is created.
+    - ObjectStitch and SAM are lazily initialized on the first aggressive call,
+      and then cached/reused for subsequent calls.
     """
 
     def __init__(
@@ -76,6 +89,46 @@ class OSInsertModel:
             device=self.config.device,
         )
 
+        self._os_model = None
+        self._os_sampler = None
+        self._sam_predictor = None
+
+    def _get_objectstitch_model_and_sampler(self):
+        if self._os_model is not None and self._os_sampler is not None:
+            return self._os_model, self._os_sampler
+
+        objectstitch_ckpt = self.config.objectstitch_ckpt_path
+        if objectstitch_ckpt is None:
+            objectstitch_ckpt = self.config.model_dir / "objectstitch" / "v1" / "model.ckpt"
+
+        objectstitch_cfg = self.config.objectstitch_config_path
+        if objectstitch_cfg is None:
+            objectstitch_cfg = self.config.model_dir / "objectstitch" / "v1" / "configs" / "v1.yaml"
+
+        os_cfg = ObjectStitchConfig(
+            ckpt_path=objectstitch_ckpt,
+            config_path=objectstitch_cfg,
+            clip_dir=self.config.objectstitch_clip_dir,
+            device=self.config.device,
+        )
+        self._os_model, self._os_sampler = load_objectstitch_model_and_sampler(config=os_cfg)
+        return self._os_model, self._os_sampler
+
+    def _get_sam_predictor(self):
+        if self._sam_predictor is not None:
+            return self._sam_predictor
+
+        sam_ckpt = self.config.sam_checkpoint
+        if sam_ckpt is None:
+            sam_ckpt = self.config.model_dir / "sam" / "sam_vit_h_4b8939.pth"
+
+        sam_cfg = SamOnObjectStitchConfig(
+            sam_checkpoint=sam_ckpt,
+            device=self.config.device,
+        )
+        self._sam_predictor = build_sam_predictor(config=sam_cfg)
+        return self._sam_predictor
+
     def __call__(
         self,
         background_path: str | Path,
@@ -108,10 +161,8 @@ class OSInsertModel:
             Directory where the final composed image will be written.
         mode:
             - ``"conservative"``: background + bbox -> mask -> InsertAnything.
-            - ``"aggressive"``: (planned) ObjectStitch + SAM -> combined
-              source/mask -> InsertAnything. The public API does not require
-              any extra paths; all three stages will be handled internally in
-              future updates.
+            - ``"aggressive"``: ObjectStitch + SAM -> combined source/mask ->
+              InsertAnything.
         cleanup_intermediate:
             Deprecated. Present for backward compatibility.
         verbose:
@@ -165,44 +216,26 @@ class OSInsertModel:
         # Aggressive mode: ObjectStitch + SAM + InsertAnything.
         # ------------------------------------------------------------------
         if mode == "aggressive":
-            # 1) ObjectStitch coarse composite (in-memory).
-            objectstitch_ckpt = self.config.objectstitch_ckpt_path
-            if objectstitch_ckpt is None:
-                objectstitch_ckpt = self.config.model_dir / "objectstitch" / "v1" / "model.ckpt"
-
-            objectstitch_cfg = self.config.objectstitch_config_path
-            if objectstitch_cfg is None:
-                objectstitch_cfg = self.config.model_dir / "objectstitch" / "v1" / "configs" / "v1.yaml"
-
-            os_cfg = ObjectStitchConfig(
-                ckpt_path=objectstitch_ckpt,
-                config_path=objectstitch_cfg,
-                clip_dir=self.config.objectstitch_clip_dir,
+            # 1) ObjectStitch coarse composite (cached weights).
+            os_model, os_sampler = self._get_objectstitch_model_and_sampler()
+            os_rgb = run_objectstitch_single_image_from_images_cached(
+                background=cv2.cvtColor(bg, cv2.COLOR_BGR2RGB),
+                foreground=cv2.cvtColor(fg, cv2.COLOR_BGR2RGB),
+                foreground_mask=fg_mask,
+                bbox_xyxy=tuple(bbox),
+                model=os_model,
+                sampler=os_sampler,
                 device=self.config.device,
-            )
-            os_rgb = run_objectstitch_single_image(
-                background_path,
-                foreground_path,
-                foreground_mask_path,
-                tuple(bbox),
-                config=os_cfg,
                 seed=seed,
             )
 
             # 2) SAM mask on top of ObjectStitch composite (in-memory).
-            sam_ckpt = self.config.sam_checkpoint
-            if sam_ckpt is None:
-                sam_ckpt = self.config.model_dir / "sam" / "sam_vit_h_4b8939.pth"
-
-            sam_cfg = SamOnObjectStitchConfig(
-                sam_checkpoint=sam_ckpt,
-                device=self.config.device,
-            )
-            sam_mask = run_sam_on_objectstitch(
+            predictor = self._get_sam_predictor()
+            sam_mask = run_sam_on_objectstitch_with_predictor(
+                predictor=predictor,
                 os_image=cv2.cvtColor(os_rgb, cv2.COLOR_RGB2BGR),
                 bg_shape_hw=(h, w),
                 bbox_xyxy_bg=tuple(bbox),
-                config=sam_cfg,
             )
 
             # 3) Construct InsertAnything source & mask following
@@ -303,42 +336,24 @@ class OSInsertModel:
         seeds = [seed]
 
         if mode == "aggressive":
-            objectstitch_ckpt = self.config.objectstitch_ckpt_path
-            if objectstitch_ckpt is None:
-                objectstitch_ckpt = self.config.model_dir / "objectstitch" / "v1" / "model.ckpt"
-
-            objectstitch_cfg = self.config.objectstitch_config_path
-            if objectstitch_cfg is None:
-                objectstitch_cfg = self.config.model_dir / "objectstitch" / "v1" / "configs" / "v1.yaml"
-
-            os_cfg = ObjectStitchConfig(
-                ckpt_path=objectstitch_ckpt,
-                config_path=objectstitch_cfg,
-                clip_dir=self.config.objectstitch_clip_dir,
-                device=self.config.device,
-            )
-            os_rgb = run_objectstitch_single_image_from_images(
+            os_model, os_sampler = self._get_objectstitch_model_and_sampler()
+            os_rgb = run_objectstitch_single_image_from_images_cached(
                 background=background[:, :, ::-1],
                 foreground=foreground[:, :, ::-1],
                 foreground_mask=foreground_mask,
                 bbox_xyxy=tuple(bbox_xyxy),
-                config=os_cfg,
+                model=os_model,
+                sampler=os_sampler,
+                device=self.config.device,
                 seed=seed,
             )
 
-            sam_ckpt = self.config.sam_checkpoint
-            if sam_ckpt is None:
-                sam_ckpt = self.config.model_dir / "sam" / "sam_vit_h_4b8939.pth"
-            sam_cfg = SamOnObjectStitchConfig(
-                sam_checkpoint=sam_ckpt,
-                device=self.config.device,
-            )
-
-            sam_mask = run_sam_on_objectstitch(
+            predictor = self._get_sam_predictor()
+            sam_mask = run_sam_on_objectstitch_with_predictor(
+                predictor=predictor,
                 os_image=cv2.cvtColor(os_rgb, cv2.COLOR_RGB2BGR),
                 bg_shape_hw=(h, w),
                 bbox_xyxy_bg=tuple(bbox_xyxy),
-                config=sam_cfg,
             )
 
             bg_bgr = background

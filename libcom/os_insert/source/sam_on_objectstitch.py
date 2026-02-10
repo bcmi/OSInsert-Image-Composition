@@ -193,3 +193,55 @@ def run_sam_on_objectstitch(
     predictor = SamPredictor(sam)
 
     return _run_sam_on_image(predictor, os_image_bgr, (x1, y1, x2, y2))
+
+
+def build_sam_predictor(*, config: SamOnObjectStitchConfig):
+    if not config.sam_checkpoint.exists():
+        raise FileNotFoundError(
+            f"SAM checkpoint not found: {config.sam_checkpoint}. "
+            f"Expected at {SAM_PRETRAINED_ROOT}."
+        )
+
+    try:
+        from segment_anything import SamPredictor, sam_model_registry
+    except ImportError as e:
+        raise ImportError(
+            "segment_anything package is required for SAM aggressive mode. "
+            "Install from https://github.com/facebookresearch/segment-anything"
+        ) from e
+
+    sam = sam_model_registry[config.model_type](checkpoint=str(config.sam_checkpoint))
+    sam.to(device=config.device)
+    return SamPredictor(sam)
+
+
+def run_sam_on_objectstitch_with_predictor(
+    *,
+    predictor,
+    os_image: np.ndarray,
+    bg_shape_hw: Tuple[int, int],
+    bbox_xyxy_bg: Tuple[int, int, int, int],
+) -> np.ndarray:
+    os_image_bgr = os_image
+    if os_image_bgr.ndim != 3 or os_image_bgr.shape[2] != 3:
+        raise ValueError("Expected HxWx3 image")
+
+    os_h, os_w = os_image_bgr.shape[:2]
+    bg_h, bg_w = bg_shape_hw
+
+    bx1, by1, bx2, by2 = bbox_xyxy_bg
+
+    scale_x = os_w / float(bg_w) if bg_w > 0 else 1.0
+    scale_y = os_h / float(bg_h) if bg_h > 0 else 1.0
+
+    x1 = int(bx1 * scale_x)
+    y1 = int(by1 * scale_y)
+    x2 = int(bx2 * scale_x)
+    y2 = int(by2 * scale_y)
+
+    x1 = max(0, min(x1, os_w - 1))
+    y1 = max(0, min(y1, os_h - 1))
+    x2 = max(x1 + 1, min(x2, os_w))
+    y2 = max(y1 + 1, min(y2, os_h))
+
+    return _run_sam_on_image(predictor, os_image_bgr, (x1, y1, x2, y2))
