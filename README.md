@@ -39,7 +39,7 @@ conda create -n osinsert python=3.10
 conda activate osinsert
 pip install -r requirements.txt
 ```
-
+Pre-install numpy and pyarrow some installation problems can be solved. The command is as follows:
 ```bash
 conda create -n osinsert python=3.10 
 conda activate osinsert
