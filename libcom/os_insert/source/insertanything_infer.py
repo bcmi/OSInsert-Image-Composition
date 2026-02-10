@@ -342,19 +342,22 @@ def _run_insertanything_with_pipes(
 
     for seed in seeds:
         generator = torch.Generator(device=device).manual_seed(seed)
-        edited_image = pipe(
-            image=diptych_ref_tar,
-            mask_image=mask_diptych,
-            height=mask_diptych.size[1],
-            width=mask_diptych.size[0],
-            max_sequence_length=512,
-            generator=generator,
-            strength=strength if strength is not None else 1.0,
-            sam_mask=sam_mask_diptych,
-            bbox_mask=bbox_mask_diptych,
-            split_ratio=split_ratio,
-            **pipe_prior_output,
-        ).images[0]
+        from diffusers_osinsert import patch_context
+
+        with patch_context():
+            edited_image = pipe(
+                image=diptych_ref_tar,
+                mask_image=mask_diptych,
+                height=mask_diptych.size[1],
+                width=mask_diptych.size[0],
+                max_sequence_length=512,
+                generator=generator,
+                strength=strength if strength is not None else 1.0,
+                sam_mask=sam_mask_diptych,
+                bbox_mask=bbox_mask_diptych,
+                split_ratio=split_ratio,
+                **pipe_prior_output,
+            ).images[0]
 
         width, height = edited_image.size
         left = width // 2

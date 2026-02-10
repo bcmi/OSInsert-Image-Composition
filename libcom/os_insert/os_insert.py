@@ -61,6 +61,7 @@ class OSInsertModel:
         model_dir: str | Path,
         device: str = "cuda:0",
         *,
+        eager_aggressive_init: bool = False,
         objectstitch_ckpt_path: str | Path | None = None,
         objectstitch_config_path: str | Path | None = None,
         objectstitch_clip_dir: str | Path | None = None,
@@ -92,6 +93,10 @@ class OSInsertModel:
         self._os_model = None
         self._os_sampler = None
         self._sam_predictor = None
+
+        if eager_aggressive_init:
+            self._get_objectstitch_model_and_sampler()
+            self._get_sam_predictor()
 
     def _get_objectstitch_model_and_sampler(self):
         if self._os_model is not None and self._os_sampler is not None:

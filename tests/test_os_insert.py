@@ -172,6 +172,7 @@ def main() -> None:
     osinsert = OSInsertModel(
         model_dir=model_dir,
         device=args.device,
+        eager_aggressive_init=(args.mode == "aggressive"),
         objectstitch_ckpt_path=objectstitch_ckpt_path,
         objectstitch_config_path=objectstitch_config_path,
         objectstitch_clip_dir=objectstitch_clip_dir,

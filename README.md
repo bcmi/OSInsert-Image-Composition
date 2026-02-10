@@ -48,16 +48,19 @@ pip install -r requirements.txt --only-binary=numpy,pyarrow
 ```
 ### 1.2 Diffusers Patch (aggressive mode mask switching)
 
-Aggressive mode requires a patched `diffusers` [FluxFillPipeline] to support a dynamic mask schedule:
+Aggressive mode requires a modified `diffusers` `FluxFillPipeline` to support a dynamic mask schedule:
 the first `split_ratio` portion of denoising uses `sam_mask`, and the remaining steps use `bbox_mask`.
 
-This patch is **environment-specific**: you must apply it in the same Python/conda environment you will run OSInsert with.
-Re-run the patch if you switch environments or reinstall/upgrade `diffusers`.
+This repository provides `diffusers_osinsert/`, which enables the patch via a context manager only during the OSInsert pipeline call.
+It is automatically restored afterwards, so it does not permanently affect other `diffusers` usage in the same Python process.
 
-Patch the exact [pipeline_flux_fill.py]file imported by the current `python`:
+Optional verification (only to confirm the patched file path is from this repo):
 
 ```bash
-python scripts/patch_diffusers_fluxfill.py --file "$(python -c 'import diffusers.pipelines.flux.pipeline_flux_fill as m; print(m.__file__)')"
+python -c "import diffusers_osinsert as d; import diffusers.pipelines.flux.pipeline_flux_fill as m;\
+with d.patch_context():\
+    f=m.FluxFillPipeline.__call__; w=getattr(f,'__wrapped__',None);\
+    print(getattr(w,'__code__',None).co_filename)"
 ```
 ### 1.3 Download Models & Directory Layout
 
@@ -97,8 +100,8 @@ model_dir/
   - Direct download: <https://huggingface.co/WensongSong/Insert-Anything/resolve/main/20250321_steps5000_pytorch_lora_weights.safetensors>
 
 - **FLUX.1-Fill-dev / FLUX.1-Redux-dev**:  
-  - FLUX.1-Fill-dev: <https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev/resolve/main/flux1-fill-dev.safetensors>  
-  - FLUX.1-Redux-dev: <https://huggingface.co/black-forest-labs/FLUX.1-Redux-dev/resolve/main/flux1-redux-dev.safetensors>
+  - FLUX.1-Fill-dev: <https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev/tree/main/>  
+  - FLUX.1-Redux-dev: <https://huggingface.co/black-forest-labs/FLUX.1-Redux-dev/tree/main/>
 
 After downloading, organize all files according to the directory structure above. The following environment variables can override default paths:
 
@@ -131,6 +134,16 @@ The repository includes demo data under `examples/`, which should contain at lea
 - `conservative`: use InsertAnything only, performing insertion within the bbox region on the background image.
 - `aggressive`: full two-stage pipeline: ObjectStitch → SAM → InsertAnything.
 
+Batch runs are supported via:
+
+- `--uniq_ids`: comma-separated list of `uniq_id` values (e.g. `"Demo_0,Bus_2"`).
+- `--split_ratios`: comma-separated list of aggressive-mode `split_ratio` values (e.g. `"0.33,0.5,0.67"`).
+
+Notes:
+
+- In `aggressive` mode, `split_ratio` controls the dynamic mask schedule: the first `split_ratio` portion of denoising uses the ObjectStitch/SAM mask, and the remaining steps use the bbox (rectangular) mask.
+- In `conservative` mode, `split_ratio` does not affect the algorithm (the mask is always the bbox mask).
+
 Example commands:
 
 ```bash
@@ -146,6 +159,15 @@ python tests/test_os_insert.py --mode aggressive
 
 # Maximal / reproducible aggressive run (explicitly fix key knobs)
 python tests/test_os_insert.py --mode aggressive --uniq_id Demo_0 --device cuda:0 --split_ratio 0.33 --seed 123
+
+# Batch run: multiple uniq_ids
+python tests/test_os_insert.py --mode aggressive --uniq_ids "Demo_0,Bus_2" --seed 123
+
+# Sweep run: multiple split_ratio values (aggressive mode)
+python tests/test_os_insert.py --mode aggressive --uniq_id Demo_0 --split_ratios "0.33,0.5,0.67" --seed 123
+
+# Batch + sweep (cartesian product): uniq_ids x split_ratios
+python tests/test_os_insert.py --mode aggressive --uniq_ids "Demo_0,Bus_2" --split_ratios "0.33,0.5" --seed 123
 
 # Notes
 # - You can freely remove optional flags (e.g. --device/--split_ratio/--seed/--verbose) and rely on defaults.
