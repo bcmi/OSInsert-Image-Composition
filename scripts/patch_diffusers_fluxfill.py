@@ -28,7 +28,23 @@ def _locate_pipeline_file() -> str:
 
 
 def _already_patched(text: str) -> bool:
-    return "sam_mask:" in text and "bbox_mask:" in text and "split_ratio" in text and "split_index" in text
+    # Be strict: avoid false positives when the file has partial/manual edits.
+    # We consider the patch applied only if both:
+    # 1) the pipeline signature accepts sam_mask/bbox_mask/split_ratio
+    # 2) the denoising loop switches masked latents (cur_masked_image_latents)
+    # 3) transformer hidden_states concatenates cur_masked_image_latents
+    has_sig = "sam_mask:" in text and "bbox_mask:" in text and "split_ratio" in text
+    has_switch = "cur_masked_image_latents" in text and "split_index = int(len(timesteps) * split_ratio)" in text
+    has_hidden = "hidden_states=torch.cat((latents, cur_masked_image_latents), dim=2)," in text
+    # Also require that the additional SAM/BBox masked latents computation exists.
+    # Otherwise the pipeline will accept sam_mask/bbox_mask but never use them.
+    has_extra_latents = (
+        "sam_mask_proc" in text
+        or "bbox_mask_proc" in text
+        or "sam_mask_latents = torch.cat" in text
+        or "bbox_mask_latents = torch.cat" in text
+    )
+    return has_sig and has_switch and has_hidden and has_extra_latents
 
 
 def _apply_patch(text: str) -> str:
@@ -61,8 +77,19 @@ def _apply_patch(text: str) -> str:
             + "        bbox_mask_latents = None",
         )
 
-    base_cat_anchor = "masked_image_latents = torch.cat((base_masked_latents, base_mask), dim=-1)"
-    if base_cat_anchor in text and "sam_mask_proc" not in text:
+    base_cat_anchors = [
+        "masked_image_latents = torch.cat((base_masked_latents, base_mask), dim=-1)",
+        "masked_image_latents = torch.cat((masked_image_latents, mask), dim=-1)",
+    ]
+    found_cat_anchor = next((a for a in base_cat_anchors if a in text), None)
+    if found_cat_anchor is None:
+        # Fallback: any cat line that constructs masked_image_latents with dim=-1.
+        for line in text.splitlines():
+            if "masked_image_latents = torch.cat(" in line and "dim=-1" in line:
+                found_cat_anchor = line
+                break
+
+    if found_cat_anchor is not None and "sam_mask_proc" not in text:
         extra_latents_block = (
             "\n\n"
             "            if sam_mask is not None:\n"
@@ -100,7 +127,7 @@ def _apply_patch(text: str) -> str:
             "                )\n"
             "                bbox_mask_latents = torch.cat((bbox_masked_latents, bbox_mask_tensor), dim=-1)"
         )
-        text = text.replace(base_cat_anchor, base_cat_anchor + extra_latents_block)
+        text = text.replace(found_cat_anchor, found_cat_anchor + extra_latents_block)
 
     if "split_index = int(len(timesteps) * split_ratio)" not in text:
         if "self._num_timesteps = len(timesteps)" not in text:

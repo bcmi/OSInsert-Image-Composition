@@ -372,10 +372,11 @@ class OSInsertModel:
 
             if verbose and save_path is not None:
                 inter_dir = Path(save_path) / "intermediates"
-                cv2.imwrite(str(inter_dir / "objectstitch_coarse_rgb.png"), cv2.cvtColor(os_rgb, cv2.COLOR_RGB2BGR))
-                cv2.imwrite(str(inter_dir / "sam_mask.png"), sam_mask)
-                cv2.imwrite(str(inter_dir / "blended_source.png"), src_bgr)
-                cv2.imwrite(str(inter_dir / "bbox_mask.png"), bbox_mask)
+                prefix = f"{filename_suffix}_" if filename_suffix else ""
+                cv2.imwrite(str(inter_dir / f"{prefix}objectstitch_coarse_rgb.png"), cv2.cvtColor(os_rgb, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(str(inter_dir / f"{prefix}sam_mask.png"), sam_mask)
+                cv2.imwrite(str(inter_dir / f"{prefix}blended_source.png"), src_bgr)
+                cv2.imwrite(str(inter_dir / f"{prefix}bbox_mask.png"), bbox_mask)
 
             return insertanything_infer(
                 source_image=cv2.cvtColor(src_bgr, cv2.COLOR_BGR2RGB),
@@ -396,6 +397,11 @@ class OSInsertModel:
             raise ValueError(f"Unsupported mode: {mode}")
 
         mask = make_rect_mask_from_bbox(h, w, list(bbox_xyxy))
+
+        if verbose and save_path is not None:
+            inter_dir = Path(save_path) / "intermediates"
+            prefix = f"{filename_suffix}_" if filename_suffix else ""
+            cv2.imwrite(str(inter_dir / f"{prefix}bbox_mask.png"), mask)
 
         return insertanything_infer(
             source_image=cv2.cvtColor(background, cv2.COLOR_BGR2RGB),

@@ -209,6 +209,7 @@ def main() -> None:
 
         for split_ratio in split_ratios:
             if args.mode == "conservative":
+                run_tag = f"{uniq}_{args.mode}_seed{args.seed}"
                 base_out = base_result_dir / "osinsert_demo"
                 out_dir = (
                     base_out / f"{uniq}_split{split_ratio:g}_seed{args.seed}_strength{args.strength:g}"
@@ -225,12 +226,14 @@ def main() -> None:
                     verbose=args.verbose,
                     seed=args.seed,
                     strength=args.strength,
-                    split_ratio=split_ratio,
+                    split_ratio=0.33,
                     save_path=out_dir,
+                    filename_suffix=run_tag,
                 )
                 print("[INFO] Conservative done ->", out_dir)
 
             if args.mode == "aggressive":
+                run_tag = f"{uniq}_{args.mode}_seed{args.seed}_split{split_ratio:g}"
                 base_out = base_result_dir / "osinsert_demo_aggressive"
                 out_dir = (
                     base_out / f"{uniq}_split{split_ratio:g}_seed{args.seed}_strength{args.strength:g}"
@@ -249,6 +252,7 @@ def main() -> None:
                     strength=args.strength,
                     split_ratio=split_ratio,
                     save_path=out_dir,
+                    filename_suffix=run_tag,
                 )
                 print("[INFO] Aggressive done ->", out_dir)
 

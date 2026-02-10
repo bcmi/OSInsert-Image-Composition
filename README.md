@@ -40,27 +40,25 @@ conda activate osinsert
 pip install -r requirements.txt
 ```
 
+```bash
+conda create -n osinsert python=3.10 
+conda activate osinsert
+conda install -c conda-forge numpy pyarrow
+pip install -r requirements.txt --only-binary=numpy,pyarrow
+```
 ### 1.2 Diffusers Patch (aggressive mode mask switching)
 
-Aggressive mode uses a dynamic mask schedule inside `diffusers`' `FluxFillPipeline`: the first part of denoising uses the SAM/ObjectStitch mask and the remaining steps use the bbox mask. This requires a patched `diffusers` implementation.
+Aggressive mode requires a patched `diffusers` [FluxFillPipeline] to support a dynamic mask schedule:
+the first `split_ratio` portion of denoising uses `sam_mask`, and the remaining steps use `bbox_mask`.
 
-After installing dependencies, apply the patch **manually** in the same Python environment you will run OSInsert with (typically once per environment; rerun if you reinstall `diffusers`). Conservative mode does not require this patch.
+This patch is **environment-specific**: you must apply it in the same Python/conda environment you will run OSInsert with.
+Re-run the patch if you switch environments or reinstall/upgrade `diffusers`.
 
-```bash
-python scripts/patch_diffusers_fluxfill.py
-```
-
-Optional: preview the changes without modifying files:
+Patch the exact [pipeline_flux_fill.py]file imported by the current `python`:
 
 ```bash
-python scripts/patch_diffusers_fluxfill.py --dry-run
+python scripts/patch_diffusers_fluxfill.py --file "$(python -c 'import diffusers.pipelines.flux.pipeline_flux_fill as m; print(m.__file__)')"
 ```
-
-The script is idempotent (safe to run multiple times) and will create a timestamped backup next to the patched file.
-
-> Note: This repository **does not include any pretrained weights**. Checkpoints must be downloaded via the links below and configured via the local directory structure or environment variables.
-
-
 ### 1.3 Download Models & Directory Layout
 
 `model_dir/` directory structure:
@@ -140,14 +138,14 @@ conda activate osinsert
 cd OSInsert-Image-Composition
 
 # Conservative mode (default)
-python -m test_os_insert --mode conservative --uniq_id Demo_0
+python tests/test_os_insert.py --mode conservative --uniq_id Demo_0
 
 # Aggressive mode (ObjectStitch + SAM + InsertAnything)
 # Minimal aggressive demo (uses defaults: uniq_id=Demo_0, device=cuda:0, split_ratio=0.33, seed=123)
-python -m test_os_insert --mode aggressive
+python tests/test_os_insert.py --mode aggressive
 
 # Maximal / reproducible aggressive run (explicitly fix key knobs)
-python -m test_os_insert --mode aggressive --uniq_id Demo_0 --device cuda:0 --split_ratio 0.33 --seed 123
+python tests/test_os_insert.py --mode aggressive --uniq_id Demo_0 --device cuda:0 --split_ratio 0.33 --seed 123
 
 # Notes
 # - You can freely remove optional flags (e.g. --device/--split_ratio/--seed/--verbose) and rely on defaults.

@@ -166,6 +166,12 @@ def _basename_no_ext(x: str | Path | None, fallback: str) -> str:
     return fallback
 
 
+def _normalize_suffix(s: str) -> str:
+    if not s:
+        return ""
+    return s[1:] if s.startswith("_") else s
+
+
 class InsertAnythingModel:
     def __init__(
         self,
@@ -369,11 +375,21 @@ def _run_insertanything_with_pipes(
         ref_without_ext = _basename_no_ext(ref_mask if isinstance(ref_mask, (str, Path)) else None, "ref")
         tar_without_ext = _basename_no_ext(mask_image if isinstance(mask_image, (str, Path)) else None, "tar")
 
-        suffix = filename_suffix if filename_suffix else ""
-        edited_image_save_path = os.path.join(
-            save_path,
-            f"{ref_without_ext}_to_{tar_without_ext}_seed{seed}{suffix}.png",
-        )
+        suffix_norm = _normalize_suffix(filename_suffix)
+        if ref_without_ext == "ref" and tar_without_ext == "tar" and suffix_norm:
+            base_name = suffix_norm
+            seed_token = f"seed{seed}"
+            needs_seed_suffix = (len(seeds) > 1) and (seed_token not in base_name)
+            if needs_seed_suffix:
+                edited_image_save_path = os.path.join(save_path, f"{base_name}_seed{seed}.png")
+            else:
+                edited_image_save_path = os.path.join(save_path, f"{base_name}.png")
+        else:
+            suffix = f"_{suffix_norm}" if suffix_norm else ""
+            edited_image_save_path = os.path.join(
+                save_path,
+                f"{ref_without_ext}_to_{tar_without_ext}_seed{seed}{suffix}.png",
+            )
         edited_pil.save(edited_image_save_path)
 
         if return_image:
