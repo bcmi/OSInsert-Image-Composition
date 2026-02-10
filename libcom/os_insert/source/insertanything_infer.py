@@ -1,9 +1,3 @@
-"""InsertAnything inference wrapper for OSInsert (libcom-style).
-
-This is migrated from `osinsert/inference.py` so that all required logic lives
-inside `libcom/os_insert` and does not depend on external repositories.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
