@@ -260,3 +260,11 @@ For convenience, `tests/test_os_insert.py` contains a top-level `CONFIG` block w
 `libcom/os_insert/source/ldm` is a bundled copy of the minimal LDM code used by ObjectStitch.
 
 When running, `libcom/os_insert/source/objectstitch_infer.py` automatically adds its own source directory to `sys.path`, so you do not need to manually set `PYTHONPATH` or any other environment variables.
+
+---
+
+## Other Resources
++ We summarize the papers and codes of generative image composition: [Awesome-Generative-Image-Composition](https://github.com/bcmi/Awesome-Generative-Image-Composition)
++ We summarize the papers and codes of image composition from all aspects: [Awesome-Image-Composition](https://github.com/bcmi/Awesome-Object-Insertion)
++ We summarize all possible evaluation metrics to evaluate the quality of composite images:  [Composite-Image-Evaluation](https://github.com/bcmi/Composite-Image-Evaluation)
++ We write a comprehensive survey on image composition: [the latest version](https://arxiv.org/pdf/2106.14490.pdf)
