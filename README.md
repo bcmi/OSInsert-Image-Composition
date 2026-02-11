@@ -1,15 +1,14 @@
 # OSInsert-Image-Composition
 
-OSInsert is a two-stage object insertion pipeline. This repository packages the minimal inference code for ObjectStitch, SAM, and InsertAnything into the `libcom/os_insert` module.
+OSInsert is a two-stage object insertion pipeline. In the first stage, we use  [ObjectStitch](https://github.com/bcmi/ObjectStitch-Image-Composition) to generate the composite image with reasonable foreground pose/viewpoint and extract the foreground region. In the second stage, we use [InsertAnything](https://github.com/song-wensong/insert-anything) to fill in the foreground region with the appearance details of reference image. 
 
-- **Stage 1 (ObjectStitch)**: generate a **coarse composite** on the target background image.  
-- **Stage 2 (SAM + InsertAnything)**: apply SAM to obtain the insertion mask, then combine “original background + ObjectStitch output + SAM mask” into a source image and mask, and feed them into InsertAnything to obtain a **high-quality final insertion result**.
+![](figures/pipeline.jpg) 
 
 ## 0. Example Results
 
-The table below shows several samples at different stages (from left to right: background, foreground, aggressive mode (ObjectStitch + SAM + InsertAnything), and conservative mode (InsertAnything only)).
+The table below shows several examples of our results. From left to right: background, foreground, aggressive mode (OSInsert: ObjectStitch + SAM + InsertAnything), and conservative mode (InsertAnything only).
 
-| Sample   | Background                                            | Foreground                                              | aggressive (OSInsert, full pipeline)                              | conservative (InsertAnything)                                     |
+| Sample   | Background                                            | Foreground                                              | OSInsert                              | InsertAnything                                      |
 |----------|-------------------------------------------------------|---------------------------------------------------------|--------------------------------------------------------------------|--------------------------------------------------------------------|
 | bottle   | ![](figures/bottle/bottle_bg_bbox.png)      | ![](figures/bottle/bottle_foreground.png)      | ![](figures/bottle/bottle_osinsert.png)                  | ![](figures/bottle/bottle_insertanything.png)            |
 | box      | ![](figures/box/box_bg_bbox.png)            | ![](figures/box/box_foreground.png)            | ![](figures/box/box_osinsert.png)                        | ![](figures/box/box_insertanything.png)                  |
@@ -39,7 +38,7 @@ conda create -n osinsert python=3.10
 conda activate osinsert
 pip install -r requirements.txt
 ```
-Pre-install numpy and pyarrow some installation problems can be solved. The command is as follows:
+Pre-installing numpy and pyarrow may solve some installation problems. The command is as follows:
 ```bash
 conda create -n osinsert python=3.10 
 conda activate osinsert
@@ -48,10 +47,10 @@ pip install -r requirements.txt --only-binary=numpy,pyarrow
 ```
 ### 1.2 Diffusers Patch (aggressive mode mask switching)
 
-Aggressive mode requires a modified `diffusers` `FluxFillPipeline` to support a dynamic mask schedule:
-the first `split_ratio` portion of denoising uses `sam_mask`, and the remaining steps use `bbox_mask`.
+Aggressive mode requires a modified `diffusers` `FluxFillPipeline` to support a two-phase mask schedule divided by split_ratio:
+the first phase uses `sam_mask` and the second phase uses `bbox_mask`.
 
-This repository provides `diffusers_osinsert/`, which enables the patch via a context manager only during the OSInsert pipeline call.
+This repository includes `diffusers_osinsert/`, which enables the patch via a context manager only during the OSInsert pipeline call.
 It is automatically restored afterwards, so it does not permanently affect other `diffusers` usage in the same Python process.
 
 Optional verification (only to confirm the patched file path is from this repo):
@@ -64,7 +63,7 @@ with d.patch_context():\
 ```
 ### 1.3 Download Models & Directory Layout
 
-`model_dir/` directory structure:
+You can create `model_dir/` directory and organize it as follows:
 
 ```bash
 model_dir/
@@ -103,24 +102,17 @@ model_dir/
   - FLUX.1-Fill-dev: <https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev/tree/main/>  
   - FLUX.1-Redux-dev: <https://huggingface.co/black-forest-labs/FLUX.1-Redux-dev/tree/main/>
 
-After downloading, organize all files according to the directory structure above. The following environment variables can override default paths:
-
-- `FLUX_FILL_PATH`
-- `FLUX_REDUX_PATH`
-- `IA_LORA_PATH`
-
-If these variables are not set, the defaults under `model_dir/...` are used.
-
+After downloading, organize all files according to the directory structure above. The following environment variables can override default paths: `FLUX_FILL_PATH`, `FLUX_REDUX_PATH`, `IA_LORA_PATH`, which can be modified in `tests/test_os_insert.py`.
 
 ---
 
-## 2. Run the Demo (OSInsertModel)
+## 2. Run the Demo 
 
 The main entry script is `tests/test_os_insert.py`, which calls `libcom.os_insert.OSInsertModel`.
 
-### 2.1 Demo Data
+### 2.1 Example Data
 
-The repository includes demo data under `examples/`, which should contain at least the following files:
+The repository includes demo data under `examples/`, which contains the following files:
 
 - `examples/background/Demo_0.png`
 - `examples/foreground/Demo_0.png`
@@ -129,7 +121,7 @@ The repository includes demo data under `examples/`, which should contain at lea
 
 ### 2.2 Running Conservative / Aggressive Modes
 
-`tests/test_os_insert.py` exposes a `--mode` argument to select the run mode:
+`tests/test_os_insert.py` exposes a `--mode` argument to select the running mode:
 
 - `conservative`: use InsertAnything only, performing insertion within the bbox region on the background image.
 - `aggressive`: full two-stage pipeline: ObjectStitch → SAM → InsertAnything.
@@ -141,7 +133,7 @@ Batch runs are supported via:
 
 Notes:
 
-- In `aggressive` mode, `split_ratio` controls the dynamic mask schedule: the first `split_ratio` portion of denoising uses the ObjectStitch/SAM mask, and the remaining steps use the bbox (rectangular) mask.
+- In `aggressive` mode, `split_ratio` controls the dynamic mask schedule: the first phase uses SAM mask and the second phase uses the bbox mask.
 - In `conservative` mode, `split_ratio` does not affect the algorithm (the mask is always the bbox mask).
 
 Example commands:
@@ -236,7 +228,7 @@ In aggressive mode, `seed` is also used to seed the ObjectStitch sampling step s
 
 ## 3. Data Format
 
-The data format of OSInsert follows the original ObjectStitch convention:
+The data format of OSInsert follows the convention below:
 
 - `background/{uniq}.png`
 - `foreground/{uniq}.png`
@@ -259,7 +251,7 @@ Typical usage:
 
 ## 4. Configuration Notes
 
-### 4.1 Single place to edit checkpoint paths
+### 4.1 Where to modify checkpoint paths
 
 For convenience, `tests/test_os_insert.py` contains a top-level `CONFIG` block where you can override all checkpoint paths (ObjectStitch / SAM / FLUX / LoRA) in one place. Any relative paths in that block are resolved against the repo root at runtime.
 
