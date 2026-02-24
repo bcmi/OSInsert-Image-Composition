@@ -1,8 +1,19 @@
 # OSInsert-Image-Composition
 
+This is the official implementation of **OSInsert** for the following research paper:
+> **OSInsert: Towards High-authenticity and High-fidelity Image Composition**  [[arXiv]](https://arxiv.org/pdf/2602.19523)<br>
+>
+> Jingyuan Wang, Li Niu
+
 OSInsert is a two-stage object insertion pipeline. In the first stage, we use  [ObjectStitch](https://github.com/bcmi/ObjectStitch-Image-Composition) to generate the composite image with reasonable foreground pose/viewpoint and extract the foreground region. In the second stage, we use [InsertAnything](https://github.com/song-wensong/insert-anything) to fill in the foreground region with the appearance details of reference image. 
 
 ![](figures/pipeline.jpg) 
+
+## Online Demo
+
+Try this [online demo](http://libcom.ustcnewly.com/) for image composition (object insertion) built upon [libcom](https://github.com/bcmi/libcom) toolbox and have fun!
+
+[![]](https://github.com/user-attachments/assets/87416ec5-2461-42cb-9f2d-5030b1e1b5ec)
 
 ## 0. Example Results
 
